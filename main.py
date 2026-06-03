@@ -51,10 +51,6 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
 
             option = self.add_option(ticker, Resolution.MINUTE)
             option.set_filter(self._option_filter)
-            try:
-                option.price_model = OptionPriceModels.crank_nicolson_fd()
-            except Exception:
-                pass
             self.option_symbols[ticker] = option.symbol
 
             self.fast_ema[ticker] = self.ema(equity.symbol, 12, Resolution.MINUTE)
