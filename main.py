@@ -16,7 +16,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
     Deploy with QuantConnect "Deploy Live" -> Brokerage: Alpaca -> Environment: Paper.
     """
 
-    def initialize(self) -> None:
+    def initialize(self):
         self.set_start_date(2023, 1, 1)
         self.set_end_date(2026, 6, 1)
         self.set_cash(1000)
@@ -68,18 +68,18 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             self.manage_positions,
         )
 
-    def _option_filter(self, universe: OptionFilterUniverse) -> OptionFilterUniverse:
+    def _option_filter(self, universe):
         return universe.include_weeklys().strikes(-12, 12).expiration(
             timedelta(days=self.min_dte),
             timedelta(days=self.max_dte),
         )
 
-    def on_data(self, data: Slice) -> None:
+    def on_data(self, data):
         if self.is_warming_up:
             return
         self._latest_slice = data
 
-    def manage_positions(self) -> None:
+    def manage_positions(self):
         if self.is_warming_up:
             return
 
@@ -156,7 +156,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         selected, ticker, signal, entry_price, _score, reason = best
         return selected, ticker, signal, entry_price, reason
 
-    def get_signal(self, ticker: str) -> str:
+    def get_signal(self, ticker):
         if not self.fast_ema[ticker].is_ready or not self.slow_ema[ticker].is_ready or not self.rsi_indicators[ticker].is_ready:
             return "WAIT"
 
@@ -170,7 +170,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             return "PUT"
         return "WAIT"
 
-    def contract_is_tradeable(self, contract: OptionContract) -> bool:
+    def contract_is_tradeable(self, contract):
         bid = float(contract.bid_price)
         ask = float(contract.ask_price)
         if bid <= 0 or ask <= 0 or ask < bid:
@@ -183,13 +183,13 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             return False
         return True
 
-    def delta_distance(self, contract: OptionContract) -> float:
+    def delta_distance(self, contract):
         delta = self.safe_delta(contract)
         if delta is None:
             return 999
         return abs(abs(delta) - self.target_delta)
 
-    def contract_score(self, contract: OptionContract, signal: str, mid: float) -> float:
+    def contract_score(self, contract, signal, mid):
         spread = (float(contract.ask_price) - float(contract.bid_price)) / mid if mid > 0 else 1
         dte = (contract.expiry.date() - self.time.date()).days
         delta = self.safe_delta(contract)
@@ -198,13 +198,13 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         spread_score = 1 - min(spread / self.max_spread_pct, 1)
         return (delta_score * 0.45) + (dte_score * 0.25) + (spread_score * 0.30)
 
-    def safe_delta(self, contract: OptionContract):
+    def safe_delta(self, contract):
         try:
             return float(contract.greeks.delta)
         except Exception:
             return None
 
-    def manage_open_trade(self) -> None:
+    def manage_open_trade(self):
         if self.open_trade is None:
             return
 
@@ -240,7 +240,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             self.debug(f"EXIT {symbol} {exit_reason}")
             self.open_trade = None
 
-    def on_order_event(self, order_event: OrderEvent) -> None:
+    def on_order_event(self, order_event):
         if order_event.status == OrderStatus.INVALID:
             self.debug(f"INVALID ORDER: {order_event}")
             self.open_trade = None

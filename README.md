@@ -19,15 +19,26 @@ This is a starter paper strategy, not a proven profitable system.
 
 1. Open your QuantConnect project.
 2. Open `main.py`.
-3. Replace the starter template with the contents of this repository's `main.py`.
-4. Click **Build**.
-5. Click **Backtest**.
-6. Review trades, drawdown, win rate, and order fills.
-7. Only after it builds/backtests, click **Deploy Live**.
-8. Brokerage: **Alpaca**.
-9. Environment: **Paper**.
-10. Authenticate Alpaca when QuantConnect redirects you.
-11. Choose a live node and deploy.
+3. Press `Ctrl+A` in QuantConnect's editor and delete the entire starter template.
+4. Copy the entire contents of this repository's `main.py`, starting at line 1:
+   `from AlgorithmImports import *`
+5. Paste the full file into QuantConnect. Do not paste only a middle chunk.
+6. Make sure lines 1-4 look exactly like this, with no leading spaces:
+   ```python
+   from AlgorithmImports import *
+   from datetime import timedelta
+
+
+   class AlpacaPaperOptionsStarter(QCAlgorithm):
+   ```
+7. Click **Build**.
+8. Click **Backtest**.
+9. Review trades, drawdown, win rate, and order fills.
+10. Only after it builds/backtests, click **Deploy Live**.
+11. Brokerage: **Alpaca**.
+12. Environment: **Paper**.
+13. Authenticate Alpaca when QuantConnect redirects you.
+14. Choose a live node and deploy.
 
 ## Important Notes
 
