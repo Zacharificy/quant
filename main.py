@@ -10,8 +10,8 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
     - Trade long single-leg SPY options only.
     - Use a $1,000 paper account.
     - Keep risk small: max one open option contract.
-    - Prefer liquid, cheaper 7-21 DTE contracts.
-    - Exit intraday with stop, target, signal flip, or end-of-day flattening.
+    - Prefer liquid, cheaper 14-30 DTE call contracts in a daily uptrend.
+    - Exit intraday with stop, target, time stop, or end-of-day flattening.
 
     Deploy with QuantConnect "Deploy Live" -> Brokerage: Alpaca -> Environment: Paper.
     """
@@ -29,20 +29,23 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         self.fast_ema = {}
         self.slow_ema = {}
         self.rsi_indicators = {}
+        self.daily_fast_ema = {}
+        self.daily_slow_ema = {}
         self._latest_slice = None
 
         self.max_open_contracts = 1
-        self.max_premium_pct = 0.10
-        self.max_contract_mid = 1.00
-        self.stop_loss_pct = 0.20
-        self.take_profit_pct = 0.35
-        self.max_hold_minutes = 180
-        self.cooldown_days = 5
-        self.min_dte = 7
-        self.max_dte = 21
-        self.target_otm_pct = 0.03
-        self.max_spread_pct = 0.25
-        self.min_signal_score = 0.78
+        self.max_premium_pct = 0.07
+        self.min_contract_mid = 0.25
+        self.max_contract_mid = 0.75
+        self.stop_loss_pct = 0.25
+        self.take_profit_pct = 0.60
+        self.max_hold_minutes = 240
+        self.cooldown_days = 10
+        self.min_dte = 14
+        self.max_dte = 30
+        self.target_otm_pct = 0.02
+        self.max_spread_pct = 0.15
+        self.min_signal_score = 0.82
         self.skip_log_interval = 50
         self.entry_order_timeout = timedelta(minutes=10)
 
@@ -64,8 +67,10 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             self.fast_ema[ticker] = self.ema(equity.symbol, 12, Resolution.MINUTE)
             self.slow_ema[ticker] = self.ema(equity.symbol, 26, Resolution.MINUTE)
             self.rsi_indicators[ticker] = self.rsi(equity.symbol, 14, MovingAverageType.WILDERS, Resolution.MINUTE)
+            self.daily_fast_ema[ticker] = self.ema(equity.symbol, 20, Resolution.DAILY)
+            self.daily_slow_ema[ticker] = self.ema(equity.symbol, 50, Resolution.DAILY)
 
-        self.set_warm_up(timedelta(days=5))
+        self.set_warm_up(timedelta(days=60))
         self.schedule.on(
             self.date_rules.every_day("SPY"),
             self.time_rules.every(timedelta(minutes=10)),
@@ -146,8 +151,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             if chain is None:
                 continue
 
-            right = OptionRight.CALL if signal == "CALL" else OptionRight.PUT
-            contracts = [contract for contract in chain if contract.right == right]
+            contracts = [contract for contract in chain if contract.right == OptionRight.CALL]
             contracts = [contract for contract in contracts if self.min_dte <= (contract.expiry.date() - self.time.date()).days <= self.max_dte]
             contracts = [contract for contract in contracts if self.contract_is_tradeable(contract)]
             if not contracts:
@@ -173,15 +177,18 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
     def get_signal(self, ticker):
         if not self.fast_ema[ticker].is_ready or not self.slow_ema[ticker].is_ready or not self.rsi_indicators[ticker].is_ready:
             return "WAIT"
+        if not self.daily_fast_ema[ticker].is_ready or not self.daily_slow_ema[ticker].is_ready:
+            return "WAIT"
 
         fast = self.fast_ema[ticker].current.value
         slow = self.slow_ema[ticker].current.value
         rsi = self.rsi_indicators[ticker].current.value
+        daily_fast = self.daily_fast_ema[ticker].current.value
+        daily_slow = self.daily_slow_ema[ticker].current.value
+        price = self.securities[self.symbols[ticker]].price
 
-        if fast > slow and 52 <= rsi <= 62:
+        if price > daily_slow and daily_fast > daily_slow and fast > slow and 50 <= rsi <= 60:
             return "CALL"
-        if fast < slow and 38 <= rsi <= 48:
-            return "PUT"
         return "WAIT"
 
     def contract_is_tradeable(self, contract):
@@ -190,7 +197,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         if bid <= 0 or ask <= 0 or ask < bid:
             return False
         mid = (bid + ask) / 2
-        if mid <= 0 or mid > self.max_contract_mid:
+        if mid < self.min_contract_mid or mid > self.max_contract_mid:
             return False
         spread_pct = (ask - bid) / mid
         if spread_pct > self.max_spread_pct:
@@ -201,8 +208,6 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         if underlying_price <= 0:
             return 999
         target_strike = underlying_price * (1 + self.target_otm_pct)
-        if signal == "PUT":
-            target_strike = underlying_price * (1 - self.target_otm_pct)
         return abs(float(contract.strike) - target_strike)
 
     def contract_score(self, contract, signal, mid, underlying_price):
@@ -219,7 +224,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
 
     def is_entry_time(self):
         minutes = self.time.hour * 60 + self.time.minute
-        return (10 * 60) <= minutes <= (14 * 60 + 30)
+        return (10 * 60 + 30) <= minutes <= (13 * 60 + 30)
 
     def manage_open_trade(self):
         if self.open_trade is None:
@@ -239,9 +244,6 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
 
         pnl_pct = (current / entry) - 1
         held_minutes = int((self.time - self.open_trade["entry_time"]).total_seconds() / 60)
-        signal = self.get_signal(str(self.open_trade["underlying"]))
-        direction = self.open_trade["direction"]
-
         exit_reason = None
         if pnl_pct <= -self.stop_loss_pct:
             exit_reason = f"stop {pnl_pct:.1%}"
@@ -251,10 +253,6 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             exit_reason = "end of day"
         elif held_minutes >= self.max_hold_minutes:
             exit_reason = f"time stop {held_minutes}m"
-        elif direction == "CALL" and signal == "PUT":
-            exit_reason = "signal flipped bearish"
-        elif direction == "PUT" and signal == "CALL":
-            exit_reason = "signal flipped bullish"
 
         if exit_reason:
             quantity = int(holding.quantity)

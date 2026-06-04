@@ -8,14 +8,14 @@ This project replaces the discontinued Discord bot with a QuantConnect algorithm
 - Instrument: long single-leg options only
 - Account size: `$1,000`
 - Max open option contracts: `1`
-- Entry: 12/26 EMA direction plus RSI confirmation
-- Contract selection: 7-21 DTE, roughly 3% out-of-the-money, spread capped
-- Risk: max 10% of portfolio value per option premium
-- Exits: -20% stop, +35% target, 180-minute time stop, signal flip, or end-of-day flattening
-- Cooldown: 5 calendar days after closing a trade
+- Entry: daily 20/50 EMA uptrend plus intraday 12/26 EMA and RSI confirmation
+- Contract selection: 14-30 DTE calls, roughly 2% out-of-the-money, spread capped
+- Risk: max 7% of portfolio value per option premium
+- Exits: -25% stop, +60% target, 240-minute time stop, or end-of-day flattening
+- Cooldown: 10 calendar days after closing a trade
 - Entry orders: limit orders are canceled if they do not fill within 10 minutes
 - Exit orders: explicit market orders during 10:00-15:30 ET only
-- Entry window: 10:00-14:30 ET only
+- Entry window: 10:30-13:30 ET only
 
 This is a starter paper strategy, not a proven profitable system.
 
