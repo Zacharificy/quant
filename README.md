@@ -1,23 +1,20 @@
-# QuantConnect Alpaca Paper Options Starter
+# QuantConnect Alpaca Paper Stocks Starter
 
 This project replaces the discontinued Discord bot with a QuantConnect algorithm that can be deployed to Alpaca Paper.
 
 ## What It Trades
 
-- Underlyings: `SPY`
-- Instrument: long single-leg options only
+- Instruments: liquid stocks and ETFs, not options
+- Universe: `SPY`, `QQQ`, `IWM`, `DIA`, `AAPL`, `MSFT`, `NVDA`, `AMD`, `PLTR`, `SOFI`
 - Account size: `$1,000`
-- Max open option contracts: `1`
-- Entry: daily 50/200 EMA uptrend, 20-day high breakout, and intraday RSI confirmation
-- Contract selection: 30-45 DTE calls, roughly 1% out-of-the-money, spread capped
-- Risk: max 8% of portfolio value per option premium
-- Exits: -30% stop, +80% target, 300-minute time stop, or end-of-day flattening
-- Cooldown: 15 calendar days after closing a trade
-- Entry orders: limit orders are canceled if they do not fill within 10 minutes
-- Exit orders: explicit market orders during 10:00-15:30 ET only
-- Entry window: 10:30-13:30 ET only
+- Max open positions: `2`
+- Sizing: up to 45% of account value per position, whole shares only
+- Entry: daily 50/200 EMA uptrend, 20-day high breakout, and RSI confirmation
+- Exits: ATR stop, ATR target, 25-day time stop, or failed trend
+- Cooldown: 7 calendar days after closing the same ticker
+- Orders: Alpaca-supported market orders only
 
-This is a starter paper strategy, not a proven profitable system. The current version is intentionally rarer and more trend-following than the first EMA/RSI draft because the earlier backtests traded too often and bled down.
+This is a starter paper strategy, not a proven profitable system. It is intentionally stock-first because a `$1,000` account is much easier to test with equities than long options.
 
 ## How To Use In QuantConnect
 
@@ -33,7 +30,7 @@ This is a starter paper strategy, not a proven profitable system. The current ve
    from datetime import timedelta
 
 
-   class AlpacaPaperOptionsStarter(QCAlgorithm):
+   class AlpacaPaperStocksStarter(QCAlgorithm):
    ```
 7. Click **Build**.
 8. Click **Backtest**.
@@ -48,27 +45,26 @@ This is a starter paper strategy, not a proven profitable system. The current ve
 
 - "Deploy Live" means the algorithm runs in real time. Choosing **Paper** keeps it paper money.
 - Do not paste Alpaca keys into code or GitHub.
-- Alpaca Paper options should be enabled by default.
 - QuantConnect backtests and paper fills are not the same as real live fills.
+- This version may take fewer trades because it waits for daily breakouts.
 - Start with paper only until you have a real sample of closed trades.
 
 ## First Things To Check
 
 After the first backtest:
 
-- Did it actually place option orders?
-- Are contracts too expensive for a `$1,000` account?
-- Are spreads too wide?
-- Is the strategy trading too often or too rarely?
-- Are exits happening from stops, targets, or time stops?
+- Did it actually place stock orders?
+- Did it avoid stocks it could not afford?
+- Are entries happening mostly during strong market periods?
+- Are exits happening from ATR stops, ATR targets, time stops, or trend failures?
+- Is drawdown better than the long-options version?
 
 If it takes too few trades, loosen one setting at a time:
 
-- `self.max_contract_mid`
-- `self.max_spread_pct`
-- RSI band in `get_signal`
-- `self.min_dte` / `self.max_dte`
-- `self.cooldown_days`
+- `self.min_score`
 - `self.breakout_lookback_days`
+- RSI bounds in `score_stock`
+- `self.max_positions`
+- `self.cooldown_days`
 
 Avoid adding smart-money/FVG/order-block filters until they are backtested.
