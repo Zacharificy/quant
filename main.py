@@ -11,7 +11,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
     - Use a $1,000 paper account.
     - Keep risk small: max one open option contract.
     - Prefer liquid, cheaper 7-21 DTE contracts.
-    - Exit with stop, target, time stop, or signal flip.
+    - Exit intraday with stop, target, signal flip, or end-of-day flattening.
 
     Deploy with QuantConnect "Deploy Live" -> Brokerage: Alpaca -> Environment: Paper.
     """
@@ -36,12 +36,13 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         self.max_contract_mid = 1.00
         self.stop_loss_pct = 0.20
         self.take_profit_pct = 0.35
-        self.max_hold_days = 2
+        self.max_hold_minutes = 180
         self.cooldown_days = 5
         self.min_dte = 7
         self.max_dte = 21
         self.target_otm_pct = 0.03
         self.max_spread_pct = 0.25
+        self.min_signal_score = 0.78
         self.skip_log_interval = 50
         self.entry_order_timeout = timedelta(minutes=10)
 
@@ -67,7 +68,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         self.set_warm_up(timedelta(days=5))
         self.schedule.on(
             self.date_rules.every_day("SPY"),
-            self.time_rules.every(timedelta(minutes=30)),
+            self.time_rules.every(timedelta(minutes=10)),
             self.manage_positions,
         )
 
@@ -98,7 +99,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             return
         if self.last_exit_date is not None and (self.time.date() - self.last_exit_date).days < self.cooldown_days:
             return
-        if not self.is_trade_time():
+        if not self.is_entry_time():
             return
 
         candidate = self.find_best_contract()
@@ -107,6 +108,8 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
 
         contract, ticker, direction, entry_price, reason = candidate
         if entry_price <= 0:
+            return
+        if self.contract_score(contract, direction, (float(contract.bid_price) + float(contract.ask_price)) / 2, self.securities[self.symbols[ticker]].price) < self.min_signal_score:
             return
 
         max_premium = self.portfolio.total_portfolio_value * self.max_premium_pct
@@ -214,6 +217,10 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         minutes = self.time.hour * 60 + self.time.minute
         return (10 * 60) <= minutes <= (15 * 60 + 30)
 
+    def is_entry_time(self):
+        minutes = self.time.hour * 60 + self.time.minute
+        return (10 * 60) <= minutes <= (14 * 60 + 30)
+
     def manage_open_trade(self):
         if self.open_trade is None:
             return
@@ -231,7 +238,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             return
 
         pnl_pct = (current / entry) - 1
-        held_days = (self.time - self.open_trade["entry_time"]).days
+        held_minutes = int((self.time - self.open_trade["entry_time"]).total_seconds() / 60)
         signal = self.get_signal(str(self.open_trade["underlying"]))
         direction = self.open_trade["direction"]
 
@@ -240,8 +247,10 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             exit_reason = f"stop {pnl_pct:.1%}"
         elif pnl_pct >= self.take_profit_pct:
             exit_reason = f"target {pnl_pct:.1%}"
-        elif held_days >= self.max_hold_days:
-            exit_reason = f"time stop {held_days}d"
+        elif self.time.hour == 15 and self.time.minute >= 20:
+            exit_reason = "end of day"
+        elif held_minutes >= self.max_hold_minutes:
+            exit_reason = f"time stop {held_minutes}m"
         elif direction == "CALL" and signal == "PUT":
             exit_reason = "signal flipped bearish"
         elif direction == "PUT" and signal == "CALL":
