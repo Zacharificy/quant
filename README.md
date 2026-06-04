@@ -9,12 +9,12 @@ This project replaces the discontinued Discord bot with a QuantConnect algorithm
 - Account size: `$1,000`
 - Max open positions: `2`
 - Sizing: up to 45% of account value per position, whole shares only
-- Entry: daily 50/200 EMA uptrend, 20-day high breakout, and RSI confirmation
-- Exits: ATR stop, ATR target, 25-day time stop, or failed trend
+- Entry: SPY/QQQ market health filter, daily 50/200 EMA uptrend, 20-day high breakout, and RSI confirmation
+- Exits: ATR stop, ATR trailing stop, ATR target, 25-day time stop, or failed trend
 - Cooldown: 7 calendar days after closing the same ticker
 - Orders: Alpaca-supported market orders only
 
-This is a starter paper strategy, not a proven profitable system. It is intentionally stock-first because a `$1,000` account is much easier to test with equities than long options.
+This is a starter paper strategy, not a proven profitable system. It is intentionally stock-first because a `$1,000` account is much easier to test with equities than long options. The market filter and trailing exit are there to reduce the large giveback that can happen when breakout trades keep firing into broad weakness.
 
 ## How To Use In QuantConnect
 
@@ -56,7 +56,7 @@ After the first backtest:
 - Did it actually place stock orders?
 - Did it avoid stocks it could not afford?
 - Are entries happening mostly during strong market periods?
-- Are exits happening from ATR stops, ATR targets, time stops, or trend failures?
+- Are exits happening from ATR stops, ATR trailing stops, ATR targets, time stops, or trend failures?
 - Is drawdown better than the long-options version?
 
 If it takes too few trades, loosen one setting at a time:
@@ -66,5 +66,6 @@ If it takes too few trades, loosen one setting at a time:
 - RSI bounds in `score_stock`
 - `self.max_positions`
 - `self.cooldown_days`
+- `self.trailing_stop_atr_multiple`
 
 Avoid adding smart-money/FVG/order-block filters until they are backtested.
