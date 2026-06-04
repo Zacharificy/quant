@@ -33,7 +33,6 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
             "NVDA",
             "AMD",
             "PLTR",
-            "SOFI",
         ]
 
         self.symbols = {}
@@ -43,7 +42,6 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
         self.atr_indicators = {}
         self.entry_prices = {}
         self.entry_dates = {}
-        self.highest_prices = {}
         self.last_exit_dates = {}
 
         self.max_positions = 2
@@ -53,9 +51,9 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
         self.cooldown_days = 7
         self.stop_atr_multiple = 2.5
         self.take_profit_atr_multiple = 4.0
-        self.trailing_stop_atr_multiple = 2.0
         self.max_hold_days = 25
-        self.min_score = 0.68
+        self.min_score = 0.72
+        self.max_spy_down_day_pct = -0.015
 
         for ticker in self.tickers:
             equity = self.add_equity(ticker, Resolution.DAILY)
@@ -85,7 +83,7 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
         open_count = self.open_position_count()
         if open_count >= self.max_positions:
             return
-        if not self.market_is_healthy():
+        if self.spy_had_risk_off_day():
             return
 
         candidate = self.find_best_stock()
@@ -112,7 +110,6 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
 
         self.entry_prices[symbol] = price
         self.entry_dates[symbol] = self.time.date()
-        self.highest_prices[symbol] = price
         self.debug(f"ENTRY STOCK {ticker} qty={quantity} price={price:.2f} score={score:.2f}")
 
     def manage_existing_positions(self):
@@ -123,9 +120,6 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
 
             price = self.securities[symbol].price
             entry = self.entry_prices.get(symbol, float(holding.average_price))
-            previous_high = self.highest_prices.get(symbol, entry)
-            self.highest_prices[symbol] = max(previous_high, price)
-            highest = self.highest_prices[symbol]
             atr = self.atr_indicators[ticker].current.value if self.atr_indicators[ticker].is_ready else 0
             held_days = (self.time.date() - self.entry_dates.get(symbol, self.time.date())).days
             fast = self.fast_ema[ticker].current.value if self.fast_ema[ticker].is_ready else 0
@@ -134,8 +128,6 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
             exit_reason = None
             if atr > 0 and price <= entry - (self.stop_atr_multiple * atr):
                 exit_reason = "ATR stop"
-            elif atr > 0 and highest > entry and price <= highest - (self.trailing_stop_atr_multiple * atr):
-                exit_reason = "ATR trail"
             elif atr > 0 and price >= entry + (self.take_profit_atr_multiple * atr):
                 exit_reason = "ATR target"
             elif held_days >= self.max_hold_days:
@@ -182,6 +174,8 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
             return 0
         if rsi < 50 or rsi > 72:
             return 0
+        if ticker in ["AMD", "PLTR"] and rsi < 55:
+            return 0
         if not self.is_daily_breakout(ticker):
             return 0
 
@@ -191,23 +185,21 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
         breakout_score = min((price / self.prior_high(ticker) - 1) / 0.03, 1)
         return (trend_score * 0.30) + (rsi_score * 0.25) + (atr_score * 0.20) + (breakout_score * 0.25)
 
-    def market_is_healthy(self):
-        for ticker in ["SPY", "QQQ"]:
-            if ticker not in self.symbols or not self.indicators_ready(ticker):
-                return False
+    def spy_had_risk_off_day(self):
+        if "SPY" not in self.symbols:
+            return False
 
-            symbol = self.symbols[ticker]
-            price = self.securities[symbol].price
-            fast = self.fast_ema[ticker].current.value
-            slow = self.slow_ema[ticker].current.value
-            atr = self.atr_indicators[ticker].current.value
+        history = self.history(self.symbols["SPY"], 2, Resolution.DAILY)
+        if history.empty or "close" not in history.columns or len(history["close"]) < 2:
+            return False
 
-            if price <= fast or fast <= slow:
-                return False
-            if price > 0 and atr / price > 0.045:
-                return False
+        closes = history["close"]
+        previous_close = closes.iloc[-2]
+        current_close = closes.iloc[-1]
+        if previous_close <= 0:
+            return False
 
-        return True
+        return (current_close / previous_close - 1) <= self.max_spy_down_day_pct
 
     def is_daily_breakout(self, ticker):
         high = self.prior_high(ticker)
@@ -257,4 +249,3 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
             if order_event.fill_quantity < 0:
                 self.entry_prices.pop(order_event.symbol, None)
                 self.entry_dates.pop(order_event.symbol, None)
-                self.highest_prices.pop(order_event.symbol, None)
