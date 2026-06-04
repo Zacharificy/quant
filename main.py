@@ -252,8 +252,11 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             if quantity == 0:
                 self.open_trade = None
                 return
+            trade = self.open_trade
+            trade["exit_order_id"] = -1
             ticket = self.market_order(symbol, -quantity, tag=exit_reason)
-            self.open_trade["exit_order_id"] = ticket.order_id
+            if self.open_trade is trade:
+                self.open_trade["exit_order_id"] = ticket.order_id
             self.debug(f"EXIT SUBMITTED {symbol} {exit_reason}")
 
     def manage_pending_entry(self):
