@@ -8,16 +8,16 @@ This project replaces the discontinued Discord bot with a QuantConnect algorithm
 - Instrument: long single-leg options only
 - Account size: `$1,000`
 - Max open option contracts: `1`
-- Entry: daily 20/50 EMA uptrend plus intraday 12/26 EMA and RSI confirmation
-- Contract selection: 14-30 DTE calls, roughly 2% out-of-the-money, spread capped
-- Risk: max 7% of portfolio value per option premium
-- Exits: -25% stop, +60% target, 240-minute time stop, or end-of-day flattening
-- Cooldown: 10 calendar days after closing a trade
+- Entry: daily 50/200 EMA uptrend, 20-day high breakout, and intraday RSI confirmation
+- Contract selection: 30-45 DTE calls, roughly 1% out-of-the-money, spread capped
+- Risk: max 8% of portfolio value per option premium
+- Exits: -30% stop, +80% target, 300-minute time stop, or end-of-day flattening
+- Cooldown: 15 calendar days after closing a trade
 - Entry orders: limit orders are canceled if they do not fill within 10 minutes
 - Exit orders: explicit market orders during 10:00-15:30 ET only
 - Entry window: 10:30-13:30 ET only
 
-This is a starter paper strategy, not a proven profitable system.
+This is a starter paper strategy, not a proven profitable system. The current version is intentionally rarer and more trend-following than the first EMA/RSI draft because the earlier backtests traded too often and bled down.
 
 ## How To Use In QuantConnect
 
@@ -66,8 +66,9 @@ If it takes too few trades, loosen one setting at a time:
 
 - `self.max_contract_mid`
 - `self.max_spread_pct`
-- RSI bands in `get_signal`
+- RSI band in `get_signal`
 - `self.min_dte` / `self.max_dte`
 - `self.cooldown_days`
+- `self.breakout_lookback_days`
 
 Avoid adding smart-money/FVG/order-block filters until they are backtested.

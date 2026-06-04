@@ -10,7 +10,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
     - Trade long single-leg SPY options only.
     - Use a $1,000 paper account.
     - Keep risk small: max one open option contract.
-    - Prefer liquid, cheaper 14-30 DTE call contracts in a daily uptrend.
+    - Prefer liquid 30-45 DTE call contracts on daily momentum breakouts.
     - Exit intraday with stop, target, time stop, or end-of-day flattening.
 
     Deploy with QuantConnect "Deploy Live" -> Brokerage: Alpaca -> Environment: Paper.
@@ -34,18 +34,19 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         self._latest_slice = None
 
         self.max_open_contracts = 1
-        self.max_premium_pct = 0.07
-        self.min_contract_mid = 0.25
-        self.max_contract_mid = 0.75
-        self.stop_loss_pct = 0.25
-        self.take_profit_pct = 0.60
-        self.max_hold_minutes = 240
-        self.cooldown_days = 10
-        self.min_dte = 14
-        self.max_dte = 30
-        self.target_otm_pct = 0.02
+        self.max_premium_pct = 0.08
+        self.min_contract_mid = 0.35
+        self.max_contract_mid = 0.90
+        self.stop_loss_pct = 0.30
+        self.take_profit_pct = 0.80
+        self.max_hold_minutes = 300
+        self.cooldown_days = 15
+        self.min_dte = 30
+        self.max_dte = 45
+        self.target_otm_pct = 0.01
         self.max_spread_pct = 0.15
-        self.min_signal_score = 0.82
+        self.min_signal_score = 0.80
+        self.breakout_lookback_days = 20
         self.skip_log_interval = 50
         self.entry_order_timeout = timedelta(minutes=10)
 
@@ -67,10 +68,10 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             self.fast_ema[ticker] = self.ema(equity.symbol, 12, Resolution.MINUTE)
             self.slow_ema[ticker] = self.ema(equity.symbol, 26, Resolution.MINUTE)
             self.rsi_indicators[ticker] = self.rsi(equity.symbol, 14, MovingAverageType.WILDERS, Resolution.MINUTE)
-            self.daily_fast_ema[ticker] = self.ema(equity.symbol, 20, Resolution.DAILY)
-            self.daily_slow_ema[ticker] = self.ema(equity.symbol, 50, Resolution.DAILY)
+            self.daily_fast_ema[ticker] = self.ema(equity.symbol, 50, Resolution.DAILY)
+            self.daily_slow_ema[ticker] = self.ema(equity.symbol, 200, Resolution.DAILY)
 
-        self.set_warm_up(timedelta(days=60))
+        self.set_warm_up(timedelta(days=220))
         self.schedule.on(
             self.date_rules.every_day("SPY"),
             self.time_rules.every(timedelta(minutes=10)),
@@ -180,16 +181,31 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         if not self.daily_fast_ema[ticker].is_ready or not self.daily_slow_ema[ticker].is_ready:
             return "WAIT"
 
-        fast = self.fast_ema[ticker].current.value
-        slow = self.slow_ema[ticker].current.value
         rsi = self.rsi_indicators[ticker].current.value
         daily_fast = self.daily_fast_ema[ticker].current.value
         daily_slow = self.daily_slow_ema[ticker].current.value
         price = self.securities[self.symbols[ticker]].price
 
-        if price > daily_slow and daily_fast > daily_slow and fast > slow and 50 <= rsi <= 60:
+        if price > daily_slow and daily_fast > daily_slow and 52 <= rsi <= 68 and self.is_daily_breakout(ticker):
             return "CALL"
         return "WAIT"
+
+    def is_daily_breakout(self, ticker):
+        history = self.history(self.symbols[ticker], self.breakout_lookback_days + 2, Resolution.DAILY)
+        if history.empty:
+            return False
+
+        try:
+            highs = history.loc[self.symbols[ticker]]["high"]
+        except Exception:
+            highs = history["high"]
+
+        if len(highs) < self.breakout_lookback_days + 1:
+            return False
+
+        prior_high = max(highs.iloc[-self.breakout_lookback_days - 1:-1])
+        current_price = self.securities[self.symbols[ticker]].price
+        return current_price > prior_high
 
     def contract_is_tradeable(self, contract):
         bid = float(contract.bid_price)
