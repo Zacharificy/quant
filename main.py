@@ -87,7 +87,8 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             return
 
         self.manage_pending_entry()
-        self.manage_open_trade()
+        if self.is_trade_time():
+            self.manage_open_trade()
 
         if self.pending_entry is not None:
             return
@@ -97,7 +98,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             return
         if self.last_exit_date is not None and (self.time.date() - self.last_exit_date).days < self.cooldown_days:
             return
-        if self.time.hour < 10 or self.time.hour > 15:
+        if not self.is_trade_time():
             return
 
         candidate = self.find_best_contract()
@@ -209,8 +210,14 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         spread_score = 1 - min(spread / self.max_spread_pct, 1)
         return (strike_score * 0.45) + (dte_score * 0.25) + (spread_score * 0.30)
 
+    def is_trade_time(self):
+        minutes = self.time.hour * 60 + self.time.minute
+        return (10 * 60) <= minutes <= (15 * 60 + 30)
+
     def manage_open_trade(self):
         if self.open_trade is None:
+            return
+        if self.open_trade.get("exit_order_id") is not None:
             return
 
         symbol = self.open_trade["symbol"]
@@ -241,10 +248,13 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             exit_reason = "signal flipped bullish"
 
         if exit_reason:
-            self.liquidate(symbol, tag=exit_reason)
-            self.debug(f"EXIT {symbol} {exit_reason}")
-            self.open_trade = None
-            self.last_exit_date = self.time.date()
+            quantity = int(holding.quantity)
+            if quantity == 0:
+                self.open_trade = None
+                return
+            ticket = self.market_order(symbol, -quantity, tag=exit_reason)
+            self.open_trade["exit_order_id"] = ticket.order_id
+            self.debug(f"EXIT SUBMITTED {symbol} {exit_reason}")
 
     def manage_pending_entry(self):
         if self.pending_entry is None:
@@ -262,7 +272,10 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
     def on_order_event(self, order_event):
         if order_event.status == OrderStatus.INVALID:
             self.debug(f"INVALID ORDER: {order_event}")
-            self.pending_entry = None
+            if self.pending_entry is not None and order_event.order_id == self.pending_entry["ticket_id"]:
+                self.pending_entry = None
+            if self.open_trade is not None and order_event.order_id == self.open_trade.get("exit_order_id"):
+                self.open_trade["exit_order_id"] = None
         elif order_event.status == OrderStatus.CANCELED:
             self.debug(f"CANCELED ORDER: {order_event}")
             if self.pending_entry is not None and order_event.order_id == self.pending_entry["ticket_id"]:
@@ -279,6 +292,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
                     "entry_price": fill_price,
                     "entry_time": self.time,
                     "ticket_id": self.pending_entry["ticket_id"],
+                    "exit_order_id": None,
                 }
                 self.debug(f"FILLED ENTRY {self.open_trade['symbol']} price={fill_price:.2f}")
                 self.pending_entry = None
@@ -294,5 +308,5 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
                 ticket.cancel("algorithm ended")
             self.pending_entry = None
         if self.open_trade is not None:
-            self.liquidate(self.open_trade["symbol"], tag="algorithm ended")
+            self.debug(f"OPEN AT END {self.open_trade['symbol']}")
             self.open_trade = None

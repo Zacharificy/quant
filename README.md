@@ -14,6 +14,7 @@ This project replaces the discontinued Discord bot with a QuantConnect algorithm
 - Exits: -20% stop, +35% target, 2-day time stop, or signal flip
 - Cooldown: 5 calendar days after closing a trade
 - Entry orders: limit orders are canceled if they do not fill within 10 minutes
+- Exit orders: explicit market orders during 10:00-15:30 ET only
 
 This is a starter paper strategy, not a proven profitable system.
 
