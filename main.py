@@ -33,6 +33,7 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
             "NVDA",
             "AMD",
             "PLTR",
+            "SOFI",
         ]
 
         self.symbols = {}
@@ -52,8 +53,7 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
         self.stop_atr_multiple = 2.5
         self.take_profit_atr_multiple = 4.0
         self.max_hold_days = 25
-        self.min_score = 0.72
-        self.max_spy_down_day_pct = -0.015
+        self.min_score = 0.68
 
         for ticker in self.tickers:
             equity = self.add_equity(ticker, Resolution.DAILY)
@@ -82,8 +82,6 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
 
         open_count = self.open_position_count()
         if open_count >= self.max_positions:
-            return
-        if self.spy_had_risk_off_day():
             return
 
         candidate = self.find_best_stock()
@@ -174,8 +172,6 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
             return 0
         if rsi < 50 or rsi > 72:
             return 0
-        if ticker in ["AMD", "PLTR"] and rsi < 55:
-            return 0
         if not self.is_daily_breakout(ticker):
             return 0
 
@@ -184,22 +180,6 @@ class AlpacaPaperStocksStarter(QCAlgorithm):
         atr_score = 1 - min((atr / price) / 0.08, 1)
         breakout_score = min((price / self.prior_high(ticker) - 1) / 0.03, 1)
         return (trend_score * 0.30) + (rsi_score * 0.25) + (atr_score * 0.20) + (breakout_score * 0.25)
-
-    def spy_had_risk_off_day(self):
-        if "SPY" not in self.symbols:
-            return False
-
-        history = self.history(self.symbols["SPY"], 2, Resolution.DAILY)
-        if history.empty or "close" not in history.columns or len(history["close"]) < 2:
-            return False
-
-        closes = history["close"]
-        previous_close = closes.iloc[-2]
-        current_close = closes.iloc[-1]
-        if previous_close <= 0:
-            return False
-
-        return (current_close / previous_close - 1) <= self.max_spy_down_day_pct
 
     def is_daily_breakout(self, ticker):
         high = self.prior_high(ticker)
