@@ -43,8 +43,10 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         self.target_otm_pct = 0.03
         self.max_spread_pct = 0.25
         self.skip_log_interval = 50
+        self.entry_order_timeout = timedelta(minutes=10)
 
         self.open_trade = None
+        self.pending_entry = None
         self.last_entry_date = None
         self.last_exit_date = None
         self.skip_count = 0
@@ -84,8 +86,11 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         if self.is_warming_up:
             return
 
+        self.manage_pending_entry()
         self.manage_open_trade()
 
+        if self.pending_entry is not None:
+            return
         if self.open_trade is not None:
             return
         if self.last_entry_date == self.time.date():
@@ -112,13 +117,13 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             return
 
         ticket = self.limit_order(contract.symbol, 1, round(entry_price, 2), tag=reason)
-        self.open_trade = {
+        self.pending_entry = {
             "symbol": contract.symbol,
             "underlying": ticker,
             "direction": direction,
             "entry_price": entry_price,
-            "entry_time": self.time,
             "ticket_id": ticket.order_id,
+            "submitted_time": self.time,
         }
         self.last_entry_date = self.time.date()
         self.debug(f"ENTRY {direction} {contract.symbol} limit={entry_price:.2f} {reason}")
@@ -241,10 +246,53 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             self.open_trade = None
             self.last_exit_date = self.time.date()
 
+    def manage_pending_entry(self):
+        if self.pending_entry is None:
+            return
+
+        if self.time - self.pending_entry["submitted_time"] <= self.entry_order_timeout:
+            return
+
+        ticket = self.transactions.get_order_ticket(self.pending_entry["ticket_id"])
+        if ticket is not None:
+            ticket.cancel("entry order timed out")
+        self.debug(f"CANCEL STALE ENTRY {self.pending_entry['symbol']}")
+        self.pending_entry = None
+
     def on_order_event(self, order_event):
         if order_event.status == OrderStatus.INVALID:
             self.debug(f"INVALID ORDER: {order_event}")
-            self.open_trade = None
+            self.pending_entry = None
         elif order_event.status == OrderStatus.CANCELED:
             self.debug(f"CANCELED ORDER: {order_event}")
+            if self.pending_entry is not None and order_event.order_id == self.pending_entry["ticket_id"]:
+                self.pending_entry = None
+        elif order_event.status == OrderStatus.FILLED:
+            if self.pending_entry is not None and order_event.order_id == self.pending_entry["ticket_id"]:
+                fill_price = float(order_event.fill_price)
+                if fill_price <= 0:
+                    fill_price = self.pending_entry["entry_price"]
+                self.open_trade = {
+                    "symbol": self.pending_entry["symbol"],
+                    "underlying": self.pending_entry["underlying"],
+                    "direction": self.pending_entry["direction"],
+                    "entry_price": fill_price,
+                    "entry_time": self.time,
+                    "ticket_id": self.pending_entry["ticket_id"],
+                }
+                self.debug(f"FILLED ENTRY {self.open_trade['symbol']} price={fill_price:.2f}")
+                self.pending_entry = None
+            elif self.open_trade is not None and order_event.symbol == self.open_trade["symbol"] and order_event.fill_quantity < 0:
+                self.debug(f"FILLED EXIT {order_event.symbol} price={float(order_event.fill_price):.2f}")
+                self.last_exit_date = self.time.date()
+                self.open_trade = None
+
+    def on_end_of_algorithm(self):
+        if self.pending_entry is not None:
+            ticket = self.transactions.get_order_ticket(self.pending_entry["ticket_id"])
+            if ticket is not None:
+                ticket.cancel("algorithm ended")
+            self.pending_entry = None
+        if self.open_trade is not None:
+            self.liquidate(self.open_trade["symbol"], tag="algorithm ended")
             self.open_trade = None
