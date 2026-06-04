@@ -7,10 +7,10 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
     QuantConnect + Alpaca Paper starter.
 
     Goal:
-    - Trade long single-leg SPY/QQQ options only.
+    - Trade long single-leg SPY options only.
     - Use a $1,000 paper account.
     - Keep risk small: max one open option contract.
-    - Prefer liquid 21-45 DTE contracts close to 30 delta.
+    - Prefer liquid, cheaper 7-21 DTE contracts.
     - Exit with stop, target, time stop, or signal flip.
 
     Deploy with QuantConnect "Deploy Live" -> Brokerage: Alpaca -> Environment: Paper.
@@ -23,26 +23,31 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         self.set_brokerage_model(BrokerageName.ALPACA, AccountType.MARGIN)
         self.set_time_zone(TimeZones.NEW_YORK)
 
-        self.underlyings = ["SPY", "QQQ"]
+        self.underlyings = ["SPY"]
         self.symbols = {}
         self.option_symbols = {}
         self.fast_ema = {}
         self.slow_ema = {}
         self.rsi_indicators = {}
+        self._latest_slice = None
 
         self.max_open_contracts = 1
-        self.max_premium_pct = 0.15
-        self.max_contract_mid = 1.50
-        self.stop_loss_pct = 0.30
-        self.take_profit_pct = 0.50
-        self.max_hold_days = 5
-        self.min_dte = 21
-        self.max_dte = 45
-        self.target_delta = 0.30
-        self.max_spread_pct = 0.20
+        self.max_premium_pct = 0.10
+        self.max_contract_mid = 1.00
+        self.stop_loss_pct = 0.20
+        self.take_profit_pct = 0.35
+        self.max_hold_days = 2
+        self.cooldown_days = 5
+        self.min_dte = 7
+        self.max_dte = 21
+        self.target_otm_pct = 0.03
+        self.max_spread_pct = 0.25
+        self.skip_log_interval = 50
 
         self.open_trade = None
         self.last_entry_date = None
+        self.last_exit_date = None
+        self.skip_count = 0
 
         for ticker in self.underlyings:
             equity = self.add_equity(ticker, Resolution.MINUTE)
@@ -60,7 +65,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         self.set_warm_up(timedelta(days=5))
         self.schedule.on(
             self.date_rules.every_day("SPY"),
-            self.time_rules.every(timedelta(minutes=15)),
+            self.time_rules.every(timedelta(minutes=30)),
             self.manage_positions,
         )
 
@@ -85,6 +90,8 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             return
         if self.last_entry_date == self.time.date():
             return
+        if self.last_exit_date is not None and (self.time.date() - self.last_exit_date).days < self.cooldown_days:
+            return
         if self.time.hour < 10 or self.time.hour > 15:
             return
 
@@ -96,10 +103,12 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         if entry_price <= 0:
             return
 
-        max_premium = min(self.portfolio.total_portfolio_value * self.max_premium_pct, 150)
+        max_premium = self.portfolio.total_portfolio_value * self.max_premium_pct
         estimated_debit = entry_price * 100
         if estimated_debit > max_premium:
-            self.debug(f"Skip {contract.symbol}: debit ${estimated_debit:.2f} > cap ${max_premium:.2f}")
+            self.skip_count += 1
+            if self.skip_count % self.skip_log_interval == 1:
+                self.debug(f"Skip {contract.symbol}: debit ${estimated_debit:.2f} > cap ${max_premium:.2f}")
             return
 
         ticket = self.limit_order(contract.symbol, 1, round(entry_price, 2), tag=reason)
@@ -115,8 +124,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         self.debug(f"ENTRY {direction} {contract.symbol} limit={entry_price:.2f} {reason}")
 
     def find_best_contract(self):
-        data = getattr(self, "_latest_slice", None)
-        if data is None:
+        if self._latest_slice is None:
             return None
 
         best = None
@@ -125,7 +133,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             if signal == "WAIT":
                 continue
 
-            chain = data.option_chains.get(self.option_symbols[ticker])
+            chain = self._latest_slice.option_chains.get(self.option_symbols[ticker])
             if chain is None:
                 continue
 
@@ -136,12 +144,13 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             if not contracts:
                 continue
 
-            selected = min(contracts, key=lambda contract: self.delta_distance(contract))
+            underlying_price = self.securities[self.symbols[ticker]].price
+            selected = min(contracts, key=lambda contract: self.strike_distance(contract, signal, underlying_price))
             bid = float(selected.bid_price)
             ask = float(selected.ask_price)
             mid = (bid + ask) / 2
             entry_price = round(ask, 2)
-            score = self.contract_score(selected, signal, mid)
+            score = self.contract_score(selected, signal, mid, underlying_price)
             reason = f"{ticker} {signal} EMA/RSI setup score={score:.2f}"
 
             if best is None or score > best[4]:
@@ -160,9 +169,9 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
         slow = self.slow_ema[ticker].current.value
         rsi = self.rsi_indicators[ticker].current.value
 
-        if fast > slow and 50 <= rsi <= 68:
+        if fast > slow and 52 <= rsi <= 62:
             return "CALL"
-        if fast < slow and 32 <= rsi <= 50:
+        if fast < slow and 38 <= rsi <= 48:
             return "PUT"
         return "WAIT"
 
@@ -179,26 +188,21 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             return False
         return True
 
-    def delta_distance(self, contract):
-        delta = self.safe_delta(contract)
-        if delta is None:
+    def strike_distance(self, contract, signal, underlying_price):
+        if underlying_price <= 0:
             return 999
-        return abs(abs(delta) - self.target_delta)
+        target_strike = underlying_price * (1 + self.target_otm_pct)
+        if signal == "PUT":
+            target_strike = underlying_price * (1 - self.target_otm_pct)
+        return abs(float(contract.strike) - target_strike)
 
-    def contract_score(self, contract, signal, mid):
+    def contract_score(self, contract, signal, mid, underlying_price):
         spread = (float(contract.ask_price) - float(contract.bid_price)) / mid if mid > 0 else 1
         dte = (contract.expiry.date() - self.time.date()).days
-        delta = self.safe_delta(contract)
-        delta_score = 1 - min(abs(abs(delta or 0) - self.target_delta), 0.50)
-        dte_score = 1 - min(abs(dte - 30) / 30, 1)
+        strike_score = 1 - min(self.strike_distance(contract, signal, underlying_price) / max(underlying_price * 0.05, 1), 1)
+        dte_score = 1 - min(abs(dte - 14) / 14, 1)
         spread_score = 1 - min(spread / self.max_spread_pct, 1)
-        return (delta_score * 0.45) + (dte_score * 0.25) + (spread_score * 0.30)
-
-    def safe_delta(self, contract):
-        try:
-            return float(contract.greeks.delta)
-        except Exception:
-            return None
+        return (strike_score * 0.45) + (dte_score * 0.25) + (spread_score * 0.30)
 
     def manage_open_trade(self):
         if self.open_trade is None:
@@ -235,6 +239,7 @@ class AlpacaPaperOptionsStarter(QCAlgorithm):
             self.liquidate(symbol, tag=exit_reason)
             self.debug(f"EXIT {symbol} {exit_reason}")
             self.open_trade = None
+            self.last_exit_date = self.time.date()
 
     def on_order_event(self, order_event):
         if order_event.status == OrderStatus.INVALID:

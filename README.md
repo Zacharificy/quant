@@ -4,14 +4,15 @@ This project replaces the discontinued Discord bot with a QuantConnect algorithm
 
 ## What It Trades
 
-- Underlyings: `SPY`, `QQQ`
+- Underlyings: `SPY`
 - Instrument: long single-leg options only
 - Account size: `$1,000`
 - Max open option contracts: `1`
 - Entry: 12/26 EMA direction plus RSI confirmation
-- Contract selection: 21-45 DTE, near 30 delta, spread capped
-- Risk: max 15% of portfolio value per option premium, capped at `$150`
-- Exits: -30% stop, +50% target, 5-day time stop, or signal flip
+- Contract selection: 7-21 DTE, roughly 3% out-of-the-money, spread capped
+- Risk: max 10% of portfolio value per option premium
+- Exits: -20% stop, +35% target, 2-day time stop, or signal flip
+- Cooldown: 5 calendar days after closing a trade
 
 This is a starter paper strategy, not a proven profitable system.
 
@@ -64,5 +65,6 @@ If it takes too few trades, loosen one setting at a time:
 - `self.max_spread_pct`
 - RSI bands in `get_signal`
 - `self.min_dte` / `self.max_dte`
+- `self.cooldown_days`
 
 Avoid adding smart-money/FVG/order-block filters until they are backtested.
