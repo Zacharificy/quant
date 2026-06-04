@@ -1,6 +1,6 @@
-# QuantConnect Alpaca Paper Stocks Starter
+# Alpaca Paper Stocks Bot
 
-This project replaces the discontinued Discord bot with a QuantConnect algorithm that can be deployed to Alpaca Paper.
+This project replaces the discontinued Discord bot with a small standalone Alpaca Paper stock bot you can run on your PC.
 
 ## What It Trades
 
@@ -16,48 +16,48 @@ This project replaces the discontinued Discord bot with a QuantConnect algorithm
 
 This is a starter paper strategy, not a proven profitable system. It is intentionally stock-first because a `$1,000` account is much easier to test with equities than long options.
 
-## How To Use In QuantConnect
+## Run On Your PC
 
-1. Open your QuantConnect project.
-2. Open `main.py`.
-3. Press `Ctrl+A` in QuantConnect's editor and delete the entire starter template.
-4. Copy the entire contents of this repository's `main.py`, starting at line 1:
-   `from AlgorithmImports import *`
-5. Paste the full file into QuantConnect. Do not paste only a middle chunk.
-6. Make sure lines 1-4 look exactly like this, with no leading spaces:
-   ```python
-   from AlgorithmImports import *
-   from datetime import timedelta
-
-
-   class AlpacaPaperStocksStarter(QCAlgorithm):
+1. Open PowerShell in this folder.
+2. Create a virtual environment:
+   ```powershell
+   python -m venv .venv
    ```
-7. Click **Build**.
-8. Click **Backtest**.
-9. Review trades, drawdown, win rate, and order fills.
-10. Only after it builds/backtests, click **Deploy Live**.
-11. Brokerage: **Alpaca**.
-12. Environment: **Paper**.
-13. Authenticate Alpaca when QuantConnect redirects you.
-14. Choose a live node and deploy.
+3. Activate it:
+   ```powershell
+   .\.venv\Scripts\Activate.ps1
+   ```
+4. Install dependencies:
+   ```powershell
+   pip install -r requirements.txt
+   ```
+5. Copy `.env.example` to `.env`.
+6. Put your Alpaca **paper** API key and secret in `.env`.
+7. Run the bot:
+   ```powershell
+   python .\alpaca_stock_bot.py
+   ```
+
+The bot is designed to run once per trading day after market open. It checks exits first, then looks for one new entry if there is room.
 
 ## Important Notes
 
-- "Deploy Live" means the algorithm runs in real time. Choosing **Paper** keeps it paper money.
+- This script is locked to Alpaca Paper mode.
 - Do not paste Alpaca keys into code or GitHub.
-- QuantConnect backtests and paper fills are not the same as real live fills.
+- The bot stores local state in `alpaca_stock_bot_state.json` by default.
+- Paper fills are not the same as real live fills.
 - This version may take fewer trades because it waits for daily breakouts.
 - Start with paper only until you have a real sample of closed trades.
 
 ## First Things To Check
 
-After the first backtest:
+After the first few paper runs:
 
 - Did it actually place stock orders?
 - Did it avoid stocks it could not afford?
 - Are entries happening mostly during strong market periods?
 - Are exits happening from ATR stops, ATR targets, time stops, or trend failures?
-- Is drawdown better than the long-options version?
+- Does Alpaca show the same positions that the local state file tracks?
 
 If it takes too few trades, loosen one setting at a time:
 
