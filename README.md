@@ -81,6 +81,25 @@ The repo includes Railway support:
 
 Railway runs the dashboard and a background scan loop in one service. Set `DASHBOARD_PASSWORD` before exposing the dashboard.
 
+Useful Railway strategy variables:
+
+```env
+BOT_TRADE_OPTIONS=true
+BOT_TRADE_STOCKS=true
+BOT_PAPER_EQUITY_CAP=1500
+BOT_MAX_OPTION_POSITIONS=3
+BOT_MAX_OPTION_PREMIUM_CASH=650
+BOT_MIN_OPTION_SCORE=0.58
+BOT_MIN_ACTIVITY_OPTION_SCORE=0.46
+BOT_MAX_CANDIDATE_COUNT=8
+BOT_MAX_OPTION_SPREAD_PCT=0.45
+BOT_OPTION_PROFIT_TARGET_PCT=0.60
+BOT_OPTION_STOP_LOSS_PCT=0.25
+BOT_MAX_STOCK_TRADE_CASH=600
+```
+
+The stock sleeve matters because the QuantConnect-style test was stock based. The live bot can still trade long calls/puts, but if the option chain is too expensive or too wide, it can now fall back to stock entries instead of sitting idle.
+
 ## Discord Trade Notifications
 
 No Discord commands are required. The bot can post trade activity to a `trades` or `positions` channel.

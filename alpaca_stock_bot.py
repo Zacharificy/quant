@@ -106,11 +106,11 @@ class StrategyConfig:
     position_pct: float = 0.40
     max_stock_trade_cash: float = 600.0
     target_stock_risk_cash: float = 35.0
-    trade_stocks: bool = False
-    max_candidate_count: int = 3
-    min_cross_sectional_score: float = 0.52
+    trade_stocks: bool = True
+    max_candidate_count: int = 8
+    min_cross_sectional_score: float = 0.48
     min_cash_buffer: float = 25.0
-    min_activity_option_score: float = 0.50
+    min_activity_option_score: float = 0.46
     breakout_lookback_days: int = 5
     cooldown_days: int = 7
     stop_atr_multiple: float = 2.0
@@ -130,8 +130,8 @@ class StrategyConfig:
     block_on_risky_news: bool = True
     trade_options: bool = True
     option_position_pct: float = 0.35
-    max_option_premium_cash: float = 500.0
-    min_option_score: float = 0.62
+    max_option_premium_cash: float = 650.0
+    min_option_score: float = 0.58
     max_option_positions: int = 3
     max_option_contracts_per_trade: int = 1
     max_option_contracts_per_underlying: int = 1
@@ -140,7 +140,7 @@ class StrategyConfig:
     high_price_option_dte: int = 5
     low_price_option_dte: int = 1
     high_price_option_threshold: float = 100.0
-    max_option_spread_pct: float = 0.35
+    max_option_spread_pct: float = 0.45
     max_option_model_premium_ratio: float = 1.75
     min_realized_vol: float = 0.12
     max_realized_vol: float = 1.50
@@ -388,7 +388,8 @@ class AlpacaStockBot:
     def __init__(self, config: StrategyConfig):
         load_dotenv()
         config = self.load_watchlist(config)
-        self.config = self.load_learned_settings(config)
+        config = self.load_learned_settings(config)
+        self.config = self.load_env_settings(config)
         self.state_path = Path(os.getenv("BOT_STATE_PATH", "alpaca_stock_bot_state.json"))
         self.state = load_state(self.state_path)
         self.data_feed = self.load_data_feed()
@@ -434,6 +435,100 @@ class AlpacaStockBot:
             if key in StrategyConfig.__dataclass_fields__:
                 allowed[key] = value
         return replace(config, **allowed)
+
+    @staticmethod
+    def load_env_settings(config: StrategyConfig) -> StrategyConfig:
+        """Let Railway/local env safely override live risk and scanner knobs."""
+
+        def env_bool(name: str, current: bool) -> bool:
+            raw = os.getenv(name)
+            if raw is None or raw.strip() == "":
+                return current
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+        def env_int(name: str, current: int, minimum: int | None = None) -> int:
+            raw = os.getenv(name)
+            if raw is None or raw.strip() == "":
+                return current
+            try:
+                value = int(float(raw))
+            except ValueError:
+                logging.warning("Ignoring invalid %s=%r", name, raw)
+                return current
+            return max(minimum, value) if minimum is not None else value
+
+        def env_float(name: str, current: float, minimum: float | None = None) -> float:
+            raw = os.getenv(name)
+            if raw is None or raw.strip() == "":
+                return current
+            try:
+                value = float(raw)
+            except ValueError:
+                logging.warning("Ignoring invalid %s=%r", name, raw)
+                return current
+            return max(minimum, value) if minimum is not None else value
+
+        overrides = {
+            "paper_equity_cap": env_float("BOT_PAPER_EQUITY_CAP", config.paper_equity_cap, 0.0),
+            "position_pct": env_float("BOT_STOCK_POSITION_PCT", config.position_pct, 0.0),
+            "max_stock_trade_cash": env_float("BOT_MAX_STOCK_TRADE_CASH", config.max_stock_trade_cash, 0.0),
+            "target_stock_risk_cash": env_float("BOT_TARGET_STOCK_RISK_CASH", config.target_stock_risk_cash, 0.0),
+            "trade_stocks": env_bool("BOT_TRADE_STOCKS", config.trade_stocks),
+            "trade_options": env_bool("BOT_TRADE_OPTIONS", config.trade_options),
+            "max_positions": env_int("BOT_MAX_STOCK_POSITIONS", config.max_positions, 0),
+            "max_option_positions": env_int("BOT_MAX_OPTION_POSITIONS", config.max_option_positions, 0),
+            "max_candidate_count": env_int("BOT_MAX_CANDIDATE_COUNT", config.max_candidate_count, 1),
+            "min_score": env_float("BOT_MIN_STOCK_SCORE", config.min_score, 0.0),
+            "min_option_score": env_float("BOT_MIN_OPTION_SCORE", config.min_option_score, 0.0),
+            "min_activity_option_score": env_float(
+                "BOT_MIN_ACTIVITY_OPTION_SCORE", config.min_activity_option_score, 0.0
+            ),
+            "min_cross_sectional_score": env_float(
+                "BOT_MIN_CROSS_SECTIONAL_SCORE", config.min_cross_sectional_score, 0.0
+            ),
+            "option_position_pct": env_float("BOT_OPTION_POSITION_PCT", config.option_position_pct, 0.0),
+            "max_option_premium_cash": env_float(
+                "BOT_MAX_OPTION_PREMIUM_CASH", config.max_option_premium_cash, 0.0
+            ),
+            "max_option_contracts_per_trade": env_int(
+                "BOT_MAX_OPTION_CONTRACTS_PER_TRADE", config.max_option_contracts_per_trade, 1
+            ),
+            "max_option_contracts_per_underlying": env_int(
+                "BOT_MAX_OPTION_CONTRACTS_PER_UNDERLYING", config.max_option_contracts_per_underlying, 1
+            ),
+            "min_option_dte": env_int("BOT_MIN_OPTION_DTE", config.min_option_dte, 0),
+            "max_option_dte": env_int("BOT_MAX_OPTION_DTE", config.max_option_dte, 1),
+            "high_price_option_dte": env_int("BOT_HIGH_PRICE_OPTION_DTE", config.high_price_option_dte, 1),
+            "low_price_option_dte": env_int("BOT_LOW_PRICE_OPTION_DTE", config.low_price_option_dte, 0),
+            "high_price_option_threshold": env_float(
+                "BOT_HIGH_PRICE_OPTION_THRESHOLD", config.high_price_option_threshold, 0.0
+            ),
+            "max_option_spread_pct": env_float("BOT_MAX_OPTION_SPREAD_PCT", config.max_option_spread_pct, 0.0),
+            "max_option_model_premium_ratio": env_float(
+                "BOT_MAX_OPTION_MODEL_PREMIUM_RATIO", config.max_option_model_premium_ratio, 0.0
+            ),
+            "option_profit_target_pct": env_float(
+                "BOT_OPTION_PROFIT_TARGET_PCT", config.option_profit_target_pct, 0.0
+            ),
+            "option_stop_loss_pct": env_float("BOT_OPTION_STOP_LOSS_PCT", config.option_stop_loss_pct, 0.01),
+            "option_max_hold_days": env_int("BOT_OPTION_MAX_HOLD_DAYS", config.option_max_hold_days, 1),
+            "min_market_score": env_int("BOT_MIN_MARKET_SCORE", config.min_market_score, 0),
+            "max_gap_pct": env_float("BOT_MAX_GAP_PCT", config.max_gap_pct, 0.0),
+            "max_atr_pct": env_float("BOT_MAX_ATR_PCT", config.max_atr_pct, 0.0),
+            "block_on_risky_news": env_bool("BOT_BLOCK_ON_RISKY_NEWS", config.block_on_risky_news),
+            "block_on_macro_news": env_bool("BOT_BLOCK_ON_MACRO_NEWS", config.block_on_macro_news),
+        }
+        if overrides["max_option_dte"] < overrides["min_option_dte"]:
+            overrides["max_option_dte"] = overrides["min_option_dte"]
+        logging.info(
+            "Strategy config: stocks=%s options=%s cap=%.2f max_option_positions=%s min_option_score=%.2f",
+            overrides["trade_stocks"],
+            overrides["trade_options"],
+            overrides["paper_equity_cap"],
+            overrides["max_option_positions"],
+            overrides["min_option_score"],
+        )
+        return replace(config, **overrides)
 
     @staticmethod
     def load_data_feed() -> DataFeed:
@@ -483,15 +578,23 @@ class AlpacaStockBot:
         positions = self.get_positions()
         option_positions = self.get_option_positions()
         option_entries_opened = 0
+        failed_option_underlyings = set()
+        option_attempts = 0
         while self.config.trade_options and len(self.state.setdefault("option_positions", {})) < self.config.max_option_positions:
-            option_candidate = self.find_best_option_trade(today, bars, positions, news)
+            option_candidate = self.find_best_option_trade(today, bars, positions, news, failed_option_underlyings)
             if not option_candidate:
                 break
+            option_attempts += 1
             if self.enter_option_position(*option_candidate):
                 option_entries_opened += 1
                 continue
-            logging.info("Option candidate did not produce an order.")
-            break
+            failed_option_underlyings.add(option_candidate[0])
+            logging.info(
+                "Option candidate %s did not produce an order; checking next ranked ticker.",
+                option_candidate[0],
+            )
+            if option_attempts >= max(self.config.max_candidate_count, 1):
+                break
         if option_entries_opened:
             logging.info("Opened/staged %d option trade(s).", option_entries_opened)
             save_state(self.state_path, self.state)
@@ -1505,7 +1608,7 @@ class AlpacaStockBot:
             if concentration_reasons:
                 scan["candidates"][ticker] = {"score": 0, "status": "blocked", "reasons": concentration_reasons}
                 continue
-            score, score_reasons = self.score_stock(ticker, df)
+            score, score_reasons = self.score_long_stock_trade(ticker, df)
             reasons.extend(score_reasons)
             reasons.extend(self.ticker_risk_reasons(ticker, df, news.get(ticker, [])))
             if not reasons:
@@ -1545,7 +1648,9 @@ class AlpacaStockBot:
         bars: dict[str, pd.DataFrame],
         positions: dict[str, object],
         news: dict[str, list[dict[str, str]]],
+        skip_tickers: set[str] | None = None,
     ):
+        skip_tickers = skip_tickers or set()
         option_scan = {
             "time": datetime.now(NY_TZ).isoformat(timespec="seconds"),
             "best": None,
@@ -1564,6 +1669,14 @@ class AlpacaStockBot:
         passed = []
         open_option_underlyings = self.open_option_underlyings()
         for ticker, df in bars.items():
+            if ticker in skip_tickers:
+                option_scan["candidates"][ticker] = {
+                    "direction": None,
+                    "score": 0,
+                    "status": "blocked",
+                    "reasons": ["previous option candidate failed this scan"],
+                }
+                continue
             if ticker in positions or self.in_cooldown(ticker, today):
                 continue
             concentration_reasons = self.concentration_reasons(ticker)
@@ -1673,11 +1786,98 @@ class AlpacaStockBot:
         return max(0.0, min((signal_score * 0.60) + (momentum_score * 0.25) + (volatility_score * 0.15), 1.0))
 
     def score_directional_trade(self, ticker: str, df: pd.DataFrame) -> tuple[str | None, float, list[str]]:
+        choices = []
         bullish_score, bullish_reasons = self.score_stock(ticker, df)
+        choices.append(("call", bullish_score, bullish_reasons, "trend call"))
         bearish_score, bearish_reasons = self.score_bearish_stock(ticker, df)
-        if bullish_score >= bearish_score:
-            return "call", bullish_score, bullish_reasons
-        return "put", bearish_score, bearish_reasons
+        choices.append(("put", bearish_score, bearish_reasons, "trend put"))
+        reversal_direction, reversal_score, reversal_reasons = self.score_reversal_trade(ticker, df)
+        if reversal_direction:
+            choices.append((reversal_direction, reversal_score, reversal_reasons, "reversal"))
+
+        clean_choices = [choice for choice in choices if not choice[2]]
+        if clean_choices:
+            direction, score, reasons, setup = max(clean_choices, key=lambda item: item[1])
+            if score > 0:
+                return direction, score, reasons
+        direction, score, reasons, _setup = max(choices, key=lambda item: item[1])
+        return direction, score, reasons
+
+    def score_long_stock_trade(self, ticker: str, df: pd.DataFrame) -> tuple[float, list[str]]:
+        trend_score, trend_reasons = self.score_stock(ticker, df)
+        reversal_direction, reversal_score, reversal_reasons = self.score_reversal_trade(ticker, df)
+        if reversal_direction == "call" and not reversal_reasons and reversal_score >= trend_score:
+            return reversal_score, []
+        return trend_score, trend_reasons
+
+    def score_reversal_trade(self, ticker: str, df: pd.DataFrame) -> tuple[str | None, float, list[str]]:
+        """Find pullback/reversal setups so the bot is not only chasing breakouts."""
+        if len(df) < 220:
+            return None, 0, ["not enough history"]
+        latest = df.iloc[-1]
+        previous = df.iloc[-2]
+        raw_values = (
+            latest["close"],
+            previous["close"],
+            latest["ema_50"],
+            latest["ema_200"],
+            latest["rsi_14"],
+            latest["atr_14"],
+            df["low"].tail(10).min(),
+            df["high"].tail(10).max(),
+        )
+        if any(pd.isna(value) for value in raw_values):
+            return None, 0, ["indicator not ready"]
+        price, prev_close, fast, slow, rsi, atr, low_10, high_10 = (float(value) for value in raw_values)
+        if price <= 0 or prev_close <= 0 or atr <= 0 or low_10 <= 0 or high_10 <= 0:
+            return None, 0, ["invalid reversal data"]
+        if atr / price > self.config.max_atr_pct:
+            return None, 0, [f"ATR too high {atr / price:.1%}"]
+
+        bounce_from_low = price / low_10 - 1
+        fade_from_high = high_10 / price - 1
+        close_change = price / prev_close - 1
+        above_long_trend = price > slow
+        below_long_trend = price < slow
+
+        call_score = 0.0
+        call_reasons = []
+        if not (28 <= rsi <= 55):
+            call_reasons.append(f"call reversal RSI {rsi:.1f} outside 28-55")
+        if bounce_from_low < 0.004:
+            call_reasons.append("no bounce from recent low")
+        if close_change < -0.02:
+            call_reasons.append("latest close still falling hard")
+        if not above_long_trend and price < fast:
+            call_reasons.append("below both 50/200 EMA")
+        if not call_reasons:
+            rsi_score = 1 - min(abs(rsi - 42) / 20, 1)
+            bounce_score = min(bounce_from_low / 0.045, 1)
+            trend_score = 0.65 if above_long_trend else 0.35
+            call_score = (rsi_score * 0.35) + (bounce_score * 0.35) + (trend_score * 0.20) + 0.10
+
+        put_score = 0.0
+        put_reasons = []
+        if not (45 <= rsi <= 76):
+            put_reasons.append(f"put reversal RSI {rsi:.1f} outside 45-76")
+        if fade_from_high < 0.004:
+            put_reasons.append("no rejection from recent high")
+        if close_change > 0.02:
+            put_reasons.append("latest close still squeezing up")
+        if not below_long_trend and price > fast:
+            put_reasons.append("above both 50/200 EMA")
+        if not put_reasons:
+            rsi_score = 1 - min(abs(rsi - 62) / 22, 1)
+            fade_score = min(fade_from_high / 0.045, 1)
+            trend_score = 0.65 if below_long_trend else 0.35
+            put_score = (rsi_score * 0.35) + (fade_score * 0.35) + (trend_score * 0.20) + 0.10
+
+        if call_score <= 0 and put_score <= 0:
+            reasons = call_reasons if len(call_reasons) <= len(put_reasons) else put_reasons
+            return None, 0, reasons[:3]
+        if call_score >= put_score:
+            return "call", max(0.0, min(call_score, 1.0)), []
+        return "put", max(0.0, min(put_score, 1.0)), []
 
     def score_stock(self, ticker: str, df: pd.DataFrame) -> tuple[float, list[str]]:
         lookback = self.config.breakout_lookback_days
