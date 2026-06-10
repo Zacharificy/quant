@@ -1,0 +1,61 @@
+{
+  "symbols": {
+    "SPY": {
+      "bearish_below": [
+        740.11
+      ],
+      "breakdown_below": [
+        727
+      ],
+      "breakdown_target": [
+        716.06
+      ],
+      "bullish_above": [
+        740.11,
+        743.8,
+        748.21
+      ],
+      "confirmation": [
+        740.11,
+        743.8,
+        748.21,
+        750
+      ],
+      "failure": [
+        733,
+        730,
+        727,
+        716.06
+      ],
+      "gex": [
+        716.06,
+        727,
+        730,
+        733,
+        740.11,
+        743.8,
+        748.21,
+        750
+      ],
+      "insiderfinance_weight": "context_only",
+      "manual_weight": "primary",
+      "notes": "Chart first. Puts under 740.11/premium reject. 733 revisit/failure, 730 max support, 727 GEX put wall/micro remelt; below 727 risks breakdown into 716.06 demand. Above 740.11 then 743.80/748.21/750 supports bullish retest path. InsiderFinance/GEX is context only.",
+      "resistance": [
+        740.11,
+        743.8,
+        748.21,
+        750,
+        754.62,
+        755.33,
+        760.85
+      ],
+      "support": [
+        727,
+        730,
+        733,
+        737.05
+      ],
+      "tolerance": 1.25
+    }
+  }
+}

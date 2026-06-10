@@ -5,3 +5,6 @@ __pycache__/
 .lean/
 backtests/
 storage/
+alpaca_stock_bot_state.json
+schd_yield_cache.json
+research_results/
