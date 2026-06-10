@@ -1766,7 +1766,7 @@ class AlpacaStockBot:
         return (best[0], best[1], best[2], best[3]) if best else None
 
     def cross_sectional_score(self, signal_score: float, df: pd.DataFrame, direction: str = "long") -> float:
-        """Blend absolute signal with medium-term momentum and volatility discipline."""
+        """Rank candidates without letting medium-term trend dominate the setup."""
         if len(df) < 130:
             return signal_score
         latest = df.iloc[-1]
@@ -1783,7 +1783,7 @@ class AlpacaStockBot:
             directional_momentum *= -1
         momentum_score = max(0.0, min(directional_momentum / 0.35, 1.0))
         volatility_score = 1 - min((atr / price) / self.config.max_atr_pct, 1)
-        return max(0.0, min((signal_score * 0.60) + (momentum_score * 0.25) + (volatility_score * 0.15), 1.0))
+        return max(0.0, min((signal_score * 0.75) + (momentum_score * 0.10) + (volatility_score * 0.15), 1.0))
 
     def score_directional_trade(self, ticker: str, df: pd.DataFrame) -> tuple[str | None, float, list[str]]:
         choices = []
@@ -1880,64 +1880,115 @@ class AlpacaStockBot:
         return "put", max(0.0, min(put_score, 1.0)), []
 
     def score_stock(self, ticker: str, df: pd.DataFrame) -> tuple[float, list[str]]:
-        lookback = self.config.breakout_lookback_days
-        if len(df) < 220 or len(df) < lookback + 1:
+        if len(df) < 80:
             return 0, ["not enough history"]
 
         latest = df.iloc[-1]
+        prior = df.iloc[:-1].tail(20)
+        recent = df.tail(5)
         raw_values = (
             latest["close"],
+            latest["high"],
+            latest["low"],
             latest["ema_50"],
             latest["ema_200"],
             latest["rsi_14"],
             latest["atr_14"],
-            df["high"].iloc[-lookback - 1 : -1].max(),
+            prior["high"].max(),
+            prior["low"].min(),
         )
         if any(pd.isna(value) for value in raw_values):
             return 0, ["indicator not ready"]
-        price, fast, slow, rsi, atr, prior_high = (float(value) for value in raw_values)
-        if price <= 0 or slow <= 0 or atr <= 0 or prior_high <= 0:
+        price, high, low, fast, slow, rsi, atr, resistance, support = (float(value) for value in raw_values)
+        if price <= 0 or slow <= 0 or atr <= 0 or resistance <= 0 or support <= 0:
             return 0, ["invalid price/indicator data"]
-        if price <= slow or fast <= slow:
-            return 0, ["not in 50/200 EMA uptrend"]
-        if rsi < self.config.min_rsi or rsi > self.config.max_rsi:
-            return 0, [f"RSI {rsi:.1f} outside {self.config.min_rsi:.0f}-{self.config.max_rsi:.0f}"]
-        trend_score = min((fast / slow - 1) / 0.08, 1)
-        rsi_score = 1 - min(abs(rsi - 60) / 22, 1)
-        atr_score = 1 - min((atr / price) / 0.08, 1)
-        breakout_score = max(0, min((price / prior_high - 1) / 0.03, 1))
-        score = (trend_score * 0.30) + (rsi_score * 0.25) + (atr_score * 0.20) + (breakout_score * 0.25)
+        if rsi < 30 or rsi > 82:
+            return 0, [f"call RSI {rsi:.1f} outside 30-82"]
+
+        tolerance = max(price * 0.0025, atr * 0.35)
+        broke_resistance = price > resistance + tolerance
+        support_retest = float(recent["low"].min()) <= support + tolerance and price > support + (atr * 0.35)
+        reclaimed_fast = float(df.iloc[-2]["close"]) < fast <= price
+        held_prior_breakout = price > resistance and low >= resistance - tolerance
+
+        structure_score = 0.0
+        if broke_resistance:
+            structure_score = max(structure_score, min((price - resistance) / max(atr, tolerance), 1.0))
+        if support_retest:
+            structure_score = max(structure_score, 0.75)
+        if held_prior_breakout:
+            structure_score = max(structure_score, 0.65)
+        if reclaimed_fast:
+            structure_score = max(structure_score, 0.55)
+        if structure_score <= 0:
+            return 0, [f"no call structure: support {support:.2f}, resistance {resistance:.2f}"]
+
+        trend_context = 0.25
+        if price > fast > slow:
+            trend_context = 1.0
+        elif price > fast:
+            trend_context = 0.70
+        elif price > slow:
+            trend_context = 0.55
+        rsi_score = 1 - min(abs(rsi - 58) / 28, 1)
+        atr_score = 1 - min((atr / price) / self.config.max_atr_pct, 1)
+        score = (structure_score * 0.45) + (trend_context * 0.20) + (rsi_score * 0.20) + (atr_score * 0.15)
         return score, []
 
     def score_bearish_stock(self, ticker: str, df: pd.DataFrame) -> tuple[float, list[str]]:
-        lookback = self.config.breakout_lookback_days
-        if len(df) < 220 or len(df) < lookback + 1:
+        if len(df) < 80:
             return 0, ["not enough history"]
 
         latest = df.iloc[-1]
+        prior = df.iloc[:-1].tail(20)
+        recent = df.tail(5)
         raw_values = (
             latest["close"],
+            latest["high"],
+            latest["low"],
             latest["ema_50"],
             latest["ema_200"],
             latest["rsi_14"],
             latest["atr_14"],
-            df["low"].iloc[-lookback - 1 : -1].min(),
+            prior["high"].max(),
+            prior["low"].min(),
         )
         if any(pd.isna(value) for value in raw_values):
             return 0, ["indicator not ready"]
-        price, fast, slow, rsi, atr, prior_low = (float(value) for value in raw_values)
-        if price <= 0 or slow <= 0 or atr <= 0 or prior_low <= 0:
+        price, high, low, fast, slow, rsi, atr, resistance, support = (float(value) for value in raw_values)
+        if price <= 0 or slow <= 0 or atr <= 0 or resistance <= 0 or support <= 0:
             return 0, ["invalid price/indicator data"]
-        if price >= slow or fast >= slow:
-            return 0, ["not in bearish 50/200 EMA trend"]
-        if rsi < 22 or rsi > 55:
-            return 0, [f"bearish RSI {rsi:.1f} outside 22-55"]
+        if rsi < 18 or rsi > 72:
+            return 0, [f"put RSI {rsi:.1f} outside 18-72"]
 
-        trend_score = min((slow / fast - 1) / 0.08, 1) if fast > 0 else 0
-        rsi_score = 1 - min(abs(rsi - 42) / 24, 1)
-        atr_score = 1 - min((atr / price) / 0.08, 1)
-        breakdown_score = max(0, min((prior_low / price - 1) / 0.03, 1))
-        score = (trend_score * 0.30) + (rsi_score * 0.25) + (atr_score * 0.20) + (breakdown_score * 0.25)
+        tolerance = max(price * 0.0025, atr * 0.35)
+        broke_support = price < support - tolerance
+        resistance_reject = float(recent["high"].max()) >= resistance - tolerance and price < resistance - (atr * 0.35)
+        lost_fast = float(df.iloc[-2]["close"]) > fast >= price
+        held_prior_breakdown = price < support and high <= support + tolerance
+
+        structure_score = 0.0
+        if broke_support:
+            structure_score = max(structure_score, min((support - price) / max(atr, tolerance), 1.0))
+        if resistance_reject:
+            structure_score = max(structure_score, 0.75)
+        if held_prior_breakdown:
+            structure_score = max(structure_score, 0.65)
+        if lost_fast:
+            structure_score = max(structure_score, 0.55)
+        if structure_score <= 0:
+            return 0, [f"no put structure: support {support:.2f}, resistance {resistance:.2f}"]
+
+        trend_context = 0.25
+        if price < fast < slow:
+            trend_context = 1.0
+        elif price < fast:
+            trend_context = 0.70
+        elif price < slow:
+            trend_context = 0.55
+        rsi_score = 1 - min(abs(rsi - 42) / 28, 1)
+        atr_score = 1 - min((atr / price) / self.config.max_atr_pct, 1)
+        score = (structure_score * 0.45) + (trend_context * 0.20) + (rsi_score * 0.20) + (atr_score * 0.15)
         return score, []
 
     def market_risk_report(self, bars: dict[str, pd.DataFrame], today: date) -> dict:
