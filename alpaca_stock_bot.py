@@ -87,6 +87,7 @@ TICKER_BUCKETS = {
     "SOFI": "fintech",
     "SNOW": "software",
     "F": "auto",
+    "AMC": "meme_stock",
     "HPE": "hardware",
     "NOK": "telecom",
     "SPCE": "speculative",
@@ -1041,6 +1042,59 @@ class AlpacaStockBot:
             "insiderfinance": insider_gex,
         }
 
+    def pretrade_research_path(self) -> Path:
+        return Path(os.getenv("BOT_TICKER_RESEARCH_PATH", "ticker_research.json"))
+
+    def pretrade_research_report(self, ticker: str) -> dict:
+        path = self.pretrade_research_path()
+        if not path.exists():
+            return {}
+        try:
+            with path.open("r", encoding="utf-8") as file:
+                payload = json.load(file)
+        except Exception as exc:
+            logging.info("Could not read pretrade research from %s: %s", path, exc)
+            return {}
+
+        created_at = payload.get("created_at")
+        if created_at:
+            try:
+                created = datetime.fromisoformat(str(created_at))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=NY_TZ)
+                age_hours = (datetime.now(NY_TZ) - created.astimezone(NY_TZ)).total_seconds() / 3600
+                max_age = float(os.getenv("BOT_TICKER_RESEARCH_MAX_AGE_HOURS", "36"))
+                if age_hours > max_age:
+                    return {}
+            except Exception:
+                pass
+        return (payload.get("reports") or {}).get(ticker.upper(), {})
+
+    def apply_pretrade_research_score(
+        self,
+        ticker: str,
+        direction: str | None,
+        score: float,
+        reasons: list[str],
+    ) -> tuple[float, list[str]]:
+        report = self.pretrade_research_report(ticker)
+        if not report:
+            return score, reasons
+
+        recommendation = str(report.get("recommendation", "")).lower()
+        preferred = str(report.get("preferred_direction", "")).lower()
+        if recommendation == "avoid":
+            research_reasons = report.get("reasons") or ["research says avoid"]
+            return score, reasons + [f"pretrade research avoid: {research_reasons[0]}"]
+
+        adjustment = 0.0
+        if direction and preferred == direction and recommendation.startswith("prefer"):
+            adjustment = 0.03
+        elif direction and preferred and preferred != direction and recommendation.startswith("prefer"):
+            adjustment = -0.05
+
+        return max(0.0, min(1.0, score + adjustment)), reasons
+
     def bucket_counts(self) -> dict[str, int]:
         counts = {}
         for ticker in self.state.setdefault("positions", {}):
@@ -1556,6 +1610,20 @@ class AlpacaStockBot:
             level_report = self.chart_level_report(ticker, latest_price, direction, latest_atr)
             if level_report["status"] == "ok":
                 score = max(0.0, min(1.0, score + float(level_report["score_adjustment"])))
+            score, research_reasons = self.apply_pretrade_research_score(ticker, direction, score, [])
+            if research_reasons:
+                option_scan["candidates"][ticker] = {
+                    "direction": direction,
+                    "score": round(score, 3),
+                    "status": "blocked",
+                    "reasons": research_reasons,
+                }
+                continue
+            research_report = self.pretrade_research_report(ticker)
+            research_note = []
+            if research_report:
+                recommendation = str(research_report.get("recommendation", "watch"))
+                research_note = [f"research: {recommendation}"]
             rank_score = self.cross_sectional_score(score, df, direction or "long")
             passed.append((ticker, rank_score, latest_price, direction, score))
             option_scan["candidates"][ticker] = {
@@ -1566,6 +1634,7 @@ class AlpacaStockBot:
                 "reasons": (
                     ([] if score >= ideal_score else [f"below ideal {ideal_score:.2f}, allowed as best available"])
                     + [f"levels: {reason}" for reason in level_report.get("reasons", [])]
+                    + research_note
                 ),
             }
         passed.sort(key=lambda item: item[1], reverse=True)

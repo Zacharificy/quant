@@ -20,6 +20,8 @@ DASHBOARD_PASSWORD=make_a_long_private_password
 BOT_ENABLE_AUTO_LOOP=true
 BOT_SCAN_INTERVAL_MINUTES=20
 BOT_ENABLE_AUTO_RESEARCH=true
+BOT_ENABLE_TICKER_RESEARCH=true
+BOT_RESEARCH_FOCUS_TICKERS=F,AMC,SPY
 BOT_AUTORESEARCH_APPLY=true
 BOT_AUTORESEARCH_START_HOUR_ET=17
 DISCORD_TRADE_WEBHOOK_URL=optional_webhook_for_trade_alerts
@@ -36,6 +38,7 @@ BOT_STATE_PATH=/data/alpaca_stock_bot_state.json
 BOT_WATCHLIST_PATH=/data/watchlist.json
 BOT_LEVELS_PATH=/data/trade_levels.json
 BOT_LEARNED_SETTINGS_PATH=/data/learned_settings.json
+BOT_TICKER_RESEARCH_PATH=/data/ticker_research.json
 BOT_RESEARCH_RESULTS_DIR=/data/research_results
 BOT_AUTORESEARCH_MARKER_PATH=/data/autoresearch_last_run.json
 ```
@@ -59,5 +62,5 @@ If Railway asks for a start command manually, use that exact command.
 - Keep `ALPACA_DATA_FEED=iex` unless you pay for SIP data.
 - Check the dashboard after deploy and confirm the account says paper mode.
 - If using Discord, create a webhook in the trades/positions channel and set `DISCORD_TRADE_WEBHOOK_URL`.
-- Closed-market auto research runs at most once per ET date when `BOT_ENABLE_AUTO_RESEARCH=true`.
+- Closed-market ticker research runs at most once per ET date when `BOT_ENABLE_TICKER_RESEARCH=true`; by default it always checks `F`, `AMC`, and `SPY`.
 - Let the bot run paper for multiple market days before considering real money.

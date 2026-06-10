@@ -11,6 +11,7 @@ from auto_research import run_autoresearch
 from dashboard import app
 from discord_notifier import DiscordNotifier
 from discord_presence import start_discord_presence
+from pretrade_research import run_pretrade_research
 
 
 def env_flag(name, default=True):
@@ -85,6 +86,8 @@ def run_autoresearch_loop():
     start_hour = int(os.getenv("BOT_AUTORESEARCH_START_HOUR_ET", "17"))
     check_seconds = max(300, int(float(os.getenv("BOT_AUTORESEARCH_CHECK_MINUTES", "30")) * 60))
     apply_settings = env_flag("BOT_AUTORESEARCH_APPLY", True)
+    enable_parameter_research = env_flag("BOT_ENABLE_AUTO_RESEARCH", True)
+    enable_ticker_research = env_flag("BOT_ENABLE_TICKER_RESEARCH", True)
     config = StrategyConfig()
 
     while True:
@@ -98,16 +101,32 @@ def run_autoresearch_loop():
             already_ran = last_research_date() == run_date
 
             if not clock.is_open and not already_ran and (after_research_hour or premarket_window):
-                logging.info("Starting closed-market autoresearch for %s. apply=%s", run_date, apply_settings)
-                notifier.send(f"**Auto research started**\nDate: `{run_date}` | apply: `{apply_settings}`")
-                recommendation = run_autoresearch(apply=apply_settings)
+                logging.info(
+                    "Starting closed-market research for %s. ticker=%s parameter=%s apply=%s",
+                    run_date,
+                    enable_ticker_research,
+                    enable_parameter_research,
+                    apply_settings,
+                )
+                notifier.send(
+                    "**Closed-market research started**\n"
+                    f"Date: `{run_date}` | ticker: `{enable_ticker_research}` | "
+                    f"parameters: `{enable_parameter_research}` | apply: `{apply_settings}`"
+                )
+                ticker_payload = run_pretrade_research() if enable_ticker_research else {}
+                recommendation = run_autoresearch(apply=apply_settings) if enable_parameter_research else {
+                    "reason": "parameter autoresearch disabled",
+                    "should_apply": False,
+                    "best_candidate": {},
+                }
                 save_research_marker(run_date, recommendation)
                 applied = recommendation.get("applied_settings")
                 best = recommendation.get("best_candidate") or {}
                 notifier.send(
-                    "**Auto research finished**\n"
+                    "**Closed-market research finished**\n"
                     f"Reason: {recommendation.get('reason', 'n/a')}\n"
                     f"Applied: `{bool(applied)}`\n"
+                    f"Ticker reports: `{len((ticker_payload.get('reports') or {}))}`\n"
                     f"Best return: `{float(best.get('return_pct', 0.0)):.2f}%` | "
                     f"DD: `{float(best.get('max_drawdown_pct', 0.0)):.2f}%` | "
                     f"Trades: `{int(best.get('trade_count', 0))}`"
@@ -120,19 +139,27 @@ def run_autoresearch_loop():
                 logging.info("Auto research waiting for %02d:00 ET or premarket window.", start_hour)
         except Exception:
             logging.exception("Auto research loop failed; will retry later.")
+            save_research_marker(
+                datetime.now(NY_TZ).date().isoformat(),
+                {
+                    "reason": "closed-market research failed; check Railway logs",
+                    "should_apply": False,
+                    "best_candidate": {},
+                },
+            )
             DiscordNotifier.from_env().send("**Auto research failed**\nCheck Railway logs for details.")
 
         time.sleep(check_seconds)
 
 
 def start_autoresearch_loop():
-    if not env_flag("BOT_ENABLE_AUTO_RESEARCH", True):
-        logging.info("BOT_ENABLE_AUTO_RESEARCH is disabled.")
+    if not env_flag("BOT_ENABLE_AUTO_RESEARCH", True) and not env_flag("BOT_ENABLE_TICKER_RESEARCH", True):
+        logging.info("Closed-market research is disabled.")
         return
 
     worker = threading.Thread(target=run_autoresearch_loop, name="bot-autoresearch-loop", daemon=True)
     worker.start()
-    logging.info("Started auto research loop thread.")
+    logging.info("Started closed-market research loop thread.")
 
 
 def start_background_loop():

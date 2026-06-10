@@ -182,6 +182,8 @@ On Railway, `railway_app.py` can run this automatically while the market is clos
 
 ```env
 BOT_ENABLE_AUTO_RESEARCH=true
+BOT_ENABLE_TICKER_RESEARCH=true
+BOT_RESEARCH_FOCUS_TICKERS=F,AMC,SPY
 BOT_AUTORESEARCH_APPLY=true
 BOT_AUTORESEARCH_START_HOUR_ET=17
 BOT_AUTORESEARCH_CHECK_MINUTES=30
@@ -191,9 +193,12 @@ It runs at most once per ET date. It can apply settings only if the candidate pa
 
 ```env
 BOT_LEARNED_SETTINGS_PATH=/data/learned_settings.json
+BOT_TICKER_RESEARCH_PATH=/data/ticker_research.json
 BOT_RESEARCH_RESULTS_DIR=/data/research_results
 BOT_AUTORESEARCH_MARKER_PATH=/data/autoresearch_last_run.json
 ```
+
+The ticker research step always includes `F`, `AMC`, and `SPY` by default, then adds the bot's strongest current option candidates. It writes a compact report with chart score, risky-news checks, recent article summaries, and a `prefer_call` / `prefer_put` / `watch` / `avoid` recommendation. The live bot uses that report lightly: `avoid` can block a trade, while agreement/disagreement only nudges the score.
 
 Guardrails:
 
