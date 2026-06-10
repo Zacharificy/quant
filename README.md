@@ -184,8 +184,10 @@ On Railway, `railway_app.py` can run this automatically while the market is clos
 BOT_ENABLE_AUTO_RESEARCH=true
 BOT_ENABLE_TICKER_RESEARCH=true
 BOT_RESEARCH_FOCUS_TICKERS=F,AMC,SPY
+BOT_TICKER_RESEARCH_INTERVAL_HOURS=4
 BOT_AUTORESEARCH_APPLY=true
 BOT_AUTORESEARCH_START_HOUR_ET=17
+BOT_RESEARCH_OVERNIGHT_END_HOUR_ET=8
 BOT_AUTORESEARCH_CHECK_MINUTES=30
 ```
 
@@ -198,7 +200,7 @@ BOT_RESEARCH_RESULTS_DIR=/data/research_results
 BOT_AUTORESEARCH_MARKER_PATH=/data/autoresearch_last_run.json
 ```
 
-The ticker research step always includes `F`, `AMC`, and `SPY` by default, then adds the bot's strongest current option candidates. It writes a compact report with chart score, risky-news checks, recent article summaries, and a `prefer_call` / `prefer_put` / `watch` / `avoid` recommendation. The live bot uses that report lightly: `avoid` can block a trade, while agreement/disagreement only nudges the score.
+The ticker research step runs mainly overnight, every 4 hours by default between 5 PM and 8 AM ET. It always includes `F`, `AMC`, and `SPY` by default, then adds the bot's strongest current option candidates. It writes a compact report with chart score, risky-news checks, recent article summaries, and a `prefer_call` / `prefer_put` / `watch` / `avoid` recommendation. The live bot uses that report lightly: `avoid` can block a trade, while agreement/disagreement only nudges the score.
 
 Guardrails:
 

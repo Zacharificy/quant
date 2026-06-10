@@ -22,8 +22,10 @@ BOT_SCAN_INTERVAL_MINUTES=20
 BOT_ENABLE_AUTO_RESEARCH=true
 BOT_ENABLE_TICKER_RESEARCH=true
 BOT_RESEARCH_FOCUS_TICKERS=F,AMC,SPY
+BOT_TICKER_RESEARCH_INTERVAL_HOURS=4
 BOT_AUTORESEARCH_APPLY=true
 BOT_AUTORESEARCH_START_HOUR_ET=17
+BOT_RESEARCH_OVERNIGHT_END_HOUR_ET=8
 DISCORD_TRADE_WEBHOOK_URL=optional_webhook_for_trade_alerts
 ```
 
@@ -62,5 +64,5 @@ If Railway asks for a start command manually, use that exact command.
 - Keep `ALPACA_DATA_FEED=iex` unless you pay for SIP data.
 - Check the dashboard after deploy and confirm the account says paper mode.
 - If using Discord, create a webhook in the trades/positions channel and set `DISCORD_TRADE_WEBHOOK_URL`.
-- Closed-market ticker research runs at most once per ET date when `BOT_ENABLE_TICKER_RESEARCH=true`; by default it always checks `F`, `AMC`, and `SPY`.
+- Closed-market ticker research runs mainly overnight when `BOT_ENABLE_TICKER_RESEARCH=true`; by default it checks `F`, `AMC`, and `SPY` every 4 hours between 5 PM and 8 AM ET.
 - Let the bot run paper for multiple market days before considering real money.

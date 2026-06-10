@@ -3,7 +3,7 @@ import os
 import threading
 import time
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from alpaca_stock_bot import AlpacaStockBot, NY_TZ, StrategyConfig
@@ -55,36 +55,45 @@ def marker_path() -> Path:
     return Path(os.getenv("BOT_AUTORESEARCH_MARKER_PATH", "autoresearch_last_run.json"))
 
 
-def last_research_date() -> str:
+def load_research_marker() -> dict:
     path = marker_path()
     if not path.exists():
-        return ""
+        return {}
     try:
         with path.open("r", encoding="utf-8") as file:
-            payload = json.load(file)
-        return str(payload.get("last_run_date", ""))
+            return json.load(file)
     except Exception:
-        return ""
+        return {}
 
 
-def save_research_marker(run_date: str, recommendation: dict) -> None:
+def save_research_marker(update: dict) -> None:
     path = marker_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "last_run_date": run_date,
-        "updated_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
-        "reason": recommendation.get("reason", ""),
-        "should_apply": bool(recommendation.get("should_apply")),
-        "applied_settings": recommendation.get("applied_settings", {}),
-    }
+    payload = load_research_marker()
+    payload.update(update)
+    payload["updated_at"] = datetime.now(NY_TZ).isoformat(timespec="seconds")
     with path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, indent=2, sort_keys=True)
+
+
+def hours_since(timestamp: str, now_et: datetime) -> float:
+    if not timestamp:
+        return 9999.0
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=NY_TZ)
+        return (now_et - parsed.astimezone(NY_TZ)).total_seconds() / 3600
+    except Exception:
+        return 9999.0
 
 
 def run_autoresearch_loop():
     notifier = DiscordNotifier.from_env()
     start_hour = int(os.getenv("BOT_AUTORESEARCH_START_HOUR_ET", "17"))
+    overnight_end_hour = int(os.getenv("BOT_RESEARCH_OVERNIGHT_END_HOUR_ET", "8"))
     check_seconds = max(300, int(float(os.getenv("BOT_AUTORESEARCH_CHECK_MINUTES", "30")) * 60))
+    ticker_interval_hours = max(1.0, float(os.getenv("BOT_TICKER_RESEARCH_INTERVAL_HOURS", "4")))
     apply_settings = env_flag("BOT_AUTORESEARCH_APPLY", True)
     enable_parameter_research = env_flag("BOT_ENABLE_AUTO_RESEARCH", True)
     enable_ticker_research = env_flag("BOT_ENABLE_TICKER_RESEARCH", True)
@@ -97,55 +106,79 @@ def run_autoresearch_loop():
             now_et = datetime.now(NY_TZ)
             run_date = now_et.date().isoformat()
             after_research_hour = now_et.hour >= start_hour
-            premarket_window = not clock.is_open and clock.next_open and clock.next_open.astimezone(NY_TZ) - now_et <= timedelta(hours=8)
-            already_ran = last_research_date() == run_date
+            is_overnight = now_et.hour >= start_hour or now_et.hour < overnight_end_hour
+            marker = load_research_marker()
+            ticker_due = (
+                enable_ticker_research
+                and not clock.is_open
+                and is_overnight
+                and hours_since(str(marker.get("last_ticker_research_at", "")), now_et) >= ticker_interval_hours
+            )
+            parameter_due = (
+                enable_parameter_research
+                and not clock.is_open
+                and after_research_hour
+                and str(marker.get("last_parameter_research_date", "")) != run_date
+            )
 
-            if not clock.is_open and not already_ran and (after_research_hour or premarket_window):
-                logging.info(
-                    "Starting closed-market research for %s. ticker=%s parameter=%s apply=%s",
-                    run_date,
-                    enable_ticker_research,
-                    enable_parameter_research,
-                    apply_settings,
+            if ticker_due:
+                logging.info("Starting overnight ticker research for %s.", run_date)
+                notifier.send(f"**Ticker research started**\nFocus: `{os.getenv('BOT_RESEARCH_FOCUS_TICKERS', 'F,AMC,SPY')}`")
+                ticker_payload = run_pretrade_research()
+                save_research_marker(
+                    {
+                        "last_ticker_research_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+                        "last_ticker_research_date": run_date,
+                        "last_ticker_research_reports": len(ticker_payload.get("reports") or {}),
+                    }
                 )
                 notifier.send(
-                    "**Closed-market research started**\n"
-                    f"Date: `{run_date}` | ticker: `{enable_ticker_research}` | "
-                    f"parameters: `{enable_parameter_research}` | apply: `{apply_settings}`"
+                    "**Ticker research finished**\n"
+                    f"Reports: `{len((ticker_payload.get('reports') or {}))}` | "
+                    f"Researched: `{', '.join((ticker_payload.get('researched_tickers') or [])[:8])}`"
                 )
-                ticker_payload = run_pretrade_research() if enable_ticker_research else {}
-                recommendation = run_autoresearch(apply=apply_settings) if enable_parameter_research else {
-                    "reason": "parameter autoresearch disabled",
-                    "should_apply": False,
-                    "best_candidate": {},
-                }
-                save_research_marker(run_date, recommendation)
+
+            if parameter_due:
+                logging.info("Starting after-hours parameter autoresearch for %s. apply=%s", run_date, apply_settings)
+                notifier.send(f"**Parameter auto research started**\nDate: `{run_date}` | apply: `{apply_settings}`")
+                recommendation = run_autoresearch(apply=apply_settings)
+                save_research_marker(
+                    {
+                        "last_parameter_research_date": run_date,
+                        "last_parameter_research_reason": recommendation.get("reason", ""),
+                        "last_parameter_research_should_apply": bool(recommendation.get("should_apply")),
+                        "last_parameter_research_applied_settings": recommendation.get("applied_settings", {}),
+                    }
+                )
                 applied = recommendation.get("applied_settings")
                 best = recommendation.get("best_candidate") or {}
                 notifier.send(
-                    "**Closed-market research finished**\n"
+                    "**Parameter auto research finished**\n"
                     f"Reason: {recommendation.get('reason', 'n/a')}\n"
                     f"Applied: `{bool(applied)}`\n"
-                    f"Ticker reports: `{len((ticker_payload.get('reports') or {}))}`\n"
                     f"Best return: `{float(best.get('return_pct', 0.0)):.2f}%` | "
                     f"DD: `{float(best.get('max_drawdown_pct', 0.0)):.2f}%` | "
                     f"Trades: `{int(best.get('trade_count', 0))}`"
                 )
+
             elif clock.is_open:
                 logging.info("Auto research waiting: market is open.")
-            elif already_ran:
-                logging.info("Auto research already ran for %s.", run_date)
+            elif not ticker_due and not parameter_due:
+                logging.info(
+                    "Closed-market research waiting. overnight=%s ticker_due=%s parameter_due=%s",
+                    is_overnight,
+                    ticker_due,
+                    parameter_due,
+                )
             else:
-                logging.info("Auto research waiting for %02d:00 ET or premarket window.", start_hour)
+                logging.info("Closed-market research loop idle.")
         except Exception:
             logging.exception("Auto research loop failed; will retry later.")
             save_research_marker(
-                datetime.now(NY_TZ).date().isoformat(),
                 {
-                    "reason": "closed-market research failed; check Railway logs",
-                    "should_apply": False,
-                    "best_candidate": {},
-                },
+                    "last_research_error_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+                    "last_research_error": "closed-market research failed; check Railway logs",
+                }
             )
             DiscordNotifier.from_env().send("**Auto research failed**\nCheck Railway logs for details.")
 

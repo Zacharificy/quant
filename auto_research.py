@@ -120,16 +120,21 @@ def run_autoresearch(apply: bool = False) -> dict:
     }
 
     if apply and should_apply and best:
-        learned = {
-            "breakout_lookback_days": int(best["breakout_lookback_days"]),
-            "min_score": float(best["min_score"]),
-            "stop_atr_multiple": float(best["stop_atr_multiple"]),
-            "take_profit_atr_multiple": float(best["take_profit_atr_multiple"]),
-            "max_hold_days": int(best["max_hold_days"]),
-            "position_pct": float(best["position_pct"]),
-            "source": str(recommendation_path),
-            "applied_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+        typed_fields = {
+            "breakout_lookback_days": int,
+            "min_score": float,
+            "min_cross_sectional_score": float,
+            "stop_atr_multiple": float,
+            "take_profit_atr_multiple": float,
+            "max_hold_days": int,
+            "target_stock_risk_cash": float,
         }
+        learned = {}
+        for key, caster in typed_fields.items():
+            if key in best:
+                learned[key] = caster(best[key])
+        learned["source"] = str(recommendation_path)
+        learned["applied_at"] = datetime.now(NY_TZ).isoformat(timespec="seconds")
         write_json(CURRENT_SETTINGS_PATH, learned)
         recommendation["applied_settings"] = learned
 
