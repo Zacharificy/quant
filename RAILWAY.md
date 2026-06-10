@@ -19,6 +19,7 @@ DASHBOARD_USER=admin
 DASHBOARD_PASSWORD=make_a_long_private_password
 BOT_ENABLE_AUTO_LOOP=true
 BOT_SCAN_INTERVAL_MINUTES=20
+DISCORD_TRADE_WEBHOOK_URL=optional_webhook_for_trade_alerts
 ```
 
 Do not commit your real `.env` file or Alpaca keys to GitHub.
@@ -51,4 +52,5 @@ If Railway asks for a start command manually, use that exact command.
 - Set `DASHBOARD_PASSWORD` before exposing the dashboard.
 - Keep `ALPACA_DATA_FEED=iex` unless you pay for SIP data.
 - Check the dashboard after deploy and confirm the account says paper mode.
+- If using Discord, create a webhook in the trades/positions channel and set `DISCORD_TRADE_WEBHOOK_URL`.
 - Let the bot run paper for multiple market days before considering real money.

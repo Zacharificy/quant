@@ -34,6 +34,8 @@ from alpaca.trading.requests import (
 )
 from dotenv import load_dotenv
 
+from discord_notifier import DiscordNotifier
+
 
 NY_TZ = ZoneInfo("America/New_York")
 DEFAULT_WATCHLIST_PATH = Path("watchlist.json")
@@ -402,6 +404,7 @@ class AlpacaStockBot:
         self.data = StockHistoricalDataClient(api_key, secret_key)
         self.news = NewsClient(api_key, secret_key)
         self.option_data = OptionHistoricalDataClient(api_key, secret_key)
+        self.notifier = DiscordNotifier.from_env()
 
     @staticmethod
     def watchlist_path() -> Path:
@@ -556,6 +559,7 @@ class AlpacaStockBot:
         )
         del actions[:-100]
         save_state(self.state_path, self.state)
+        self.notifier.order_submitted("Manual Close", symbol, qty, str(order.id), reason)
         return str(order.id)
 
     def trim_tracked_position(self, symbol: str, reason: str = "manual dashboard trim") -> str | None:
@@ -597,6 +601,7 @@ class AlpacaStockBot:
         )
         del actions[:-100]
         save_state(self.state_path, self.state)
+        self.notifier.order_submitted("Manual Trim", symbol, excess_qty, str(order.id), reason)
         return str(order.id)
 
     def cancel_open_orders_for_symbol(self, symbol: str) -> int:
@@ -1845,6 +1850,7 @@ class AlpacaStockBot:
         trades.append(trade)
         del trades[:-200]
         self.update_learning()
+        self.notifier.trade_exit(trade)
 
     def record_entry(self, trade: dict) -> None:
         trade["opened_at"] = datetime.now(NY_TZ).isoformat(timespec="seconds")
@@ -1852,6 +1858,7 @@ class AlpacaStockBot:
         entries = history.setdefault("opened_trades", [])
         entries.append(trade)
         del entries[:-300]
+        self.notifier.trade_entry(trade)
 
     def update_learning(self) -> None:
         trades = self.state.setdefault("trade_history", {}).setdefault("closed_trades", [])

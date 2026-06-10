@@ -1,21 +1,22 @@
-# Alpaca Paper Stocks Bot
+# Quant Trading Console
 
-This project replaces the discontinued Discord bot with a small standalone Alpaca Paper stock bot you can run on your PC.
+This project is a standalone Alpaca Paper trading console with a local/Railway dashboard, automated scan loop, options entries, exits, learning state, news checks, chart/GEX levels, and optional Discord trade notifications.
 
 ## What It Trades
 
-- Instruments: liquid stocks and ETFs, not options
+- Instruments: long-only calls/puts by default, with stock trading still available in code but disabled by default
 - Universe: `SPY`, `QQQ`, `IWM`, `DIA`, `AAPL`, `MSFT`, `NVDA`, `AMD`, `PLTR`, `SOFI`
 - Account size: `$1,000`
-- Max open stock positions: `5`
-- Sizing: up to 45% of account value per position, whole shares only
+- Internal paper sizing cap: `$1,500` by default
+- Max open option positions: `3`
+- Sizing: options are sized as contracts, where `1 contract = 100 shares`
 - Entry: daily 50/200 EMA uptrend, 20-day high breakout, and RSI confirmation
-- Exits: ATR stop, ATR target, 25-day time stop, or failed trend
+- Exits: option profit target, stop loss, time stop, or Alpaca bracket protection when accepted
 - Cooldown: 7 calendar days after closing the same ticker
-- Orders: Alpaca-supported market orders only
-- Options: optional long-only calls/puts, up to 3 option positions, limit orders only
+- Orders: Alpaca Paper orders only
+- Options: long-only calls/puts, limit orders, no naked short options
 
-This is a starter paper strategy, not a proven profitable system. It is intentionally stock-first because a `$1,000` account is much easier to test with equities than long options.
+This is a paper strategy, not a proven profitable system. Let it build a real closed-trade sample before trusting any setting.
 
 ## Run On Your PC
 
@@ -70,6 +71,35 @@ Dashboard controls:
 
 Use `Close` and `Trim` carefully. They submit real Alpaca Paper orders.
 
+## Railway
+
+The repo includes Railway support:
+
+- `Procfile`
+- `railway_app.py`
+- `RAILWAY.md`
+
+Railway runs the dashboard and a background scan loop in one service. Set `DASHBOARD_PASSWORD` before exposing the dashboard.
+
+## Discord Trade Notifications
+
+No Discord commands are required. The bot can post trade activity to a `trades` or `positions` channel.
+
+Recommended setup: create a Discord webhook in that channel, then set:
+
+```env
+DISCORD_TRADE_WEBHOOK_URL=https://discord.com/api/webhooks/...
+```
+
+Alternative setup:
+
+```env
+DISCORD_TOKEN=your_bot_token
+DISCORD_TRADE_CHANNEL_ID=your_channel_id
+```
+
+The bot sends messages when it records an opened trade, records a closed trade, or submits a manual close/trim from the dashboard. Discord failures are logged but do not block trading.
+
 ## Risk Checks
 
 Before opening a new position, the bot now checks:
@@ -79,6 +109,8 @@ Before opening a new position, the bot now checks:
 - large ticker gaps
 - unusually high ATR versus price
 - recent Alpaca news headlines for risky keywords
+- reputable external macro RSS feeds with content/title checks
+- InsiderFinance GEX levels where available
 - buying power and whole-share affordability
 
 For options, the bot only uses long premium:

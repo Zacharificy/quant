@@ -1,0 +1,178 @@
+import json
+import logging
+import os
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+
+NY_TZ = ZoneInfo("America/New_York")
+
+
+@dataclass(frozen=True)
+class DiscordNotifier:
+    webhook_url: str = ""
+    bot_token: str = ""
+    channel_id: str = ""
+
+    @classmethod
+    def from_env(cls) -> "DiscordNotifier":
+        return cls(
+            webhook_url=(
+                os.getenv("DISCORD_TRADE_WEBHOOK_URL")
+                or os.getenv("DISCORD_WEBHOOK_URL")
+                or ""
+            ).strip(),
+            bot_token=(os.getenv("DISCORD_TOKEN") or "").strip(),
+            channel_id=(
+                os.getenv("DISCORD_TRADE_CHANNEL_ID")
+                or os.getenv("DISCORD_CHANNEL_ID")
+                or ""
+            ).strip(),
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.webhook_url or (self.bot_token and self.channel_id))
+
+    def send(self, content: str) -> None:
+        if not self.enabled:
+            return
+        content = content.strip()
+        if not content:
+            return
+        if len(content) > 1900:
+            content = content[:1890] + "\n...[truncated]"
+
+        try:
+            if self.webhook_url:
+                self._post_json(self.webhook_url, {"content": content})
+            else:
+                url = f"https://discord.com/api/v10/channels/{self.channel_id}/messages"
+                self._post_json(url, {"content": content}, token=self.bot_token)
+        except Exception as exc:
+            logging.warning("Discord notification failed: %s", exc)
+
+    def trade_entry(self, trade: dict) -> None:
+        asset_type = str(trade.get("asset_type", "")).upper() or "TRADE"
+        ticker = trade.get("ticker") or trade.get("symbol") or "UNKNOWN"
+        direction = str(trade.get("direction", "")).upper()
+        order_id = trade.get("entry_order_id", "")
+        score = _fmt_float(trade.get("score"), 2)
+        now = datetime.now(NY_TZ).strftime("%Y-%m-%d %I:%M:%S %p ET")
+
+        if asset_type == "OPTION":
+            contracts = trade.get("contracts", "?")
+            entry_price = _fmt_money(trade.get("entry_price"))
+            cost = _fmt_money(trade.get("notional_cost"))
+            symbol = trade.get("symbol", ticker)
+            strike = _fmt_float(trade.get("strike"), 2)
+            dte = trade.get("dte_at_entry", "?")
+            self.send(
+                "**Opened Option Position**\n"
+                f"{now}\n"
+                f"{ticker} {direction} | `{symbol}`\n"
+                f"Contracts: {contracts} | Entry: {entry_price} | Est. cost: {cost}\n"
+                f"Strike: {strike} | DTE: {dte} | Score: {score}\n"
+                f"Order: `{order_id}`"
+            )
+            return
+
+        qty = trade.get("qty", "?")
+        entry_price = _fmt_money(trade.get("entry_price"))
+        self.send(
+            "**Opened Stock Position**\n"
+            f"{now}\n"
+            f"{ticker} {direction}\n"
+            f"Qty: {qty} | Entry: {entry_price} | Score: {score}\n"
+            f"Order: `{order_id}`"
+        )
+
+    def trade_exit(self, trade: dict) -> None:
+        asset_type = str(trade.get("asset_type", "")).upper() or "TRADE"
+        ticker = trade.get("ticker") or trade.get("symbol") or "UNKNOWN"
+        direction = str(trade.get("direction", "")).upper()
+        pnl = _fmt_money(trade.get("pnl"))
+        return_pct = _fmt_pct(trade.get("return_pct"))
+        reason = trade.get("reason", "exit")
+        order_id = trade.get("exit_order_id", "")
+        held_days = trade.get("held_days", "?")
+        now = datetime.now(NY_TZ).strftime("%Y-%m-%d %I:%M:%S %p ET")
+
+        if asset_type == "OPTION":
+            symbol = trade.get("symbol", ticker)
+            contracts = trade.get("contracts", "?")
+            self.send(
+                "**Closed Option Position**\n"
+                f"{now}\n"
+                f"{ticker} {direction} | `{symbol}`\n"
+                f"Contracts: {contracts} | P/L: {pnl} ({return_pct})\n"
+                f"Held: {held_days} day(s) | Reason: {reason}\n"
+                f"Order: `{order_id}`"
+            )
+            return
+
+        qty = trade.get("qty", "?")
+        self.send(
+            "**Closed Stock Position**\n"
+            f"{now}\n"
+            f"{ticker} {direction}\n"
+            f"Qty: {qty} | P/L: {pnl} ({return_pct})\n"
+            f"Reason: {reason}\n"
+            f"Order: `{order_id}`"
+        )
+
+    def order_submitted(self, action: str, symbol: str, qty: int, order_id: str, reason: str) -> None:
+        now = datetime.now(NY_TZ).strftime("%Y-%m-%d %I:%M:%S %p ET")
+        self.send(
+            f"**{action} Submitted**\n"
+            f"{now}\n"
+            f"`{symbol}` qty/contracts: {qty}\n"
+            f"Reason: {reason}\n"
+            f"Order: `{order_id}`"
+        )
+
+    @staticmethod
+    def _post_json(url: str, payload: dict, token: str = "") -> None:
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "quant-trading-bot/1.0",
+        }
+        if token:
+            headers["Authorization"] = f"Bot {token}"
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                if response.status >= 300:
+                    raise RuntimeError(f"Discord returned HTTP {response.status}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Discord returned HTTP {exc.code}: {detail}") from exc
+
+
+def _fmt_money(value) -> str:
+    try:
+        return f"${float(value):,.2f}"
+    except (TypeError, ValueError):
+        return "$?"
+
+
+def _fmt_float(value, digits: int) -> str:
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def _fmt_pct(value) -> str:
+    try:
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "?%"
