@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from alpaca_stock_bot import AlpacaStockBot, NY_TZ, StrategyConfig
 from dashboard import app
+from discord_presence import start_discord_presence
 
 
 def env_flag(name, default=True):
@@ -57,6 +58,7 @@ def start_background_loop():
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    start_discord_presence()
     start_background_loop()
 
     host = os.getenv("HOST", "0.0.0.0")
