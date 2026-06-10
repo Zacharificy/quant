@@ -178,6 +178,23 @@ python .\auto_research.py --apply
 
 When applied, it writes `learned_settings.json`. The bot loads that file at startup, so restart the dashboard/bot after applying settings.
 
+On Railway, `railway_app.py` can run this automatically while the market is closed:
+
+```env
+BOT_ENABLE_AUTO_RESEARCH=true
+BOT_AUTORESEARCH_APPLY=true
+BOT_AUTORESEARCH_START_HOUR_ET=17
+BOT_AUTORESEARCH_CHECK_MINUTES=30
+```
+
+It runs at most once per ET date. It can apply settings only if the candidate passes the guardrails below. For persistent Railway storage, put these on the `/data` volume:
+
+```env
+BOT_LEARNED_SETTINGS_PATH=/data/learned_settings.json
+BOT_RESEARCH_RESULTS_DIR=/data/research_results
+BOT_AUTORESEARCH_MARKER_PATH=/data/autoresearch_last_run.json
+```
+
 Guardrails:
 
 - at least 15 closed backtest trades

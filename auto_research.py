@@ -1,6 +1,7 @@
 import csv
 import json
 import logging
+import os
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
@@ -9,10 +10,10 @@ from alpaca_stock_bot import NY_TZ, StrategyConfig
 from research_runner import fetch_research_bars, parameter_sets, simulate
 
 
-RESULTS_DIR = Path("research_results")
+RESULTS_DIR = Path(os.getenv("BOT_RESEARCH_RESULTS_DIR", "research_results"))
 RESULTS_DIR.mkdir(exist_ok=True)
 
-CURRENT_SETTINGS_PATH = Path("learned_settings.json")
+CURRENT_SETTINGS_PATH = Path(os.getenv("BOT_LEARNED_SETTINGS_PATH", "learned_settings.json"))
 MIN_TRADES = 15
 MAX_DRAWDOWN_PCT = 18.0
 MIN_PROFIT_FACTOR = 1.20
@@ -27,7 +28,7 @@ def load_current_settings() -> dict:
 
 
 def write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, indent=2, sort_keys=True)
 
