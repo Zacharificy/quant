@@ -12,12 +12,17 @@ def _enabled() -> bool:
 
 
 def start_discord_presence() -> None:
-    token = (os.getenv("DISCORD_TOKEN") or "").strip()
-    if not token or not _enabled():
+    token = (os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN") or "").strip()
+    if not _enabled():
+        logging.info("Discord presence disabled by DISCORD_SHOW_ONLINE.")
+        return
+    if not token:
+        logging.warning("Discord presence not started: set DISCORD_TOKEN or TOKEN in Railway Variables.")
         return
 
     thread = threading.Thread(target=_run_presence_client, args=(token,), name="discord-presence", daemon=True)
     thread.start()
+    logging.info("Discord presence thread started.")
 
 
 def _run_presence_client(token: str) -> None:
@@ -44,4 +49,4 @@ def _run_presence_client(token: str) -> None:
     try:
         asyncio.run(client.start(token))
     except Exception as exc:
-        logging.warning("Discord presence client stopped: %s", exc)
+        logging.exception("Discord presence client stopped: %s", exc)

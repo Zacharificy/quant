@@ -25,7 +25,7 @@ class DiscordNotifier:
                 or os.getenv("DISCORD_WEBHOOK_URL")
                 or ""
             ).strip(),
-            bot_token=(os.getenv("DISCORD_TOKEN") or "").strip(),
+            bot_token=(os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN") or "").strip(),
             channel_id=(
                 os.getenv("DISCORD_TRADE_CHANNEL_ID")
                 or os.getenv("DISCORD_CHANNEL_ID")
