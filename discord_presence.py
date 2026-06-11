@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 import os
+from pathlib import Path
 import threading
 
 from discord_notifier import DiscordNotifier
@@ -28,13 +30,20 @@ def start_discord_presence() -> None:
 def _run_presence_client(token: str) -> None:
     try:
         import discord
+        from discord import app_commands
     except Exception as exc:
         logging.warning("Discord online presence disabled because discord.py is unavailable: %s", exc)
         return
 
     intents = discord.Intents.none()
     client = discord.Client(intents=intents)
+    tree = app_commands.CommandTree(client)
     notifier = DiscordNotifier.from_env()
+
+    @tree.command(name="researchplan", description="Show the bot's ticker research and next-session plan.")
+    async def researchplan(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(build_research_plan_message(), ephemeral=True)
 
     @client.event
     async def on_ready():
@@ -44,9 +53,119 @@ def _run_presence_client(token: str) -> None:
             await client.change_presence(status=discord.Status.online, activity=activity)
         except Exception as exc:
             logging.warning("Could not set Discord presence: %s", exc)
+        await sync_research_command(tree)
         notifier.send(f"**Trading bot is online**\nLogged in as `{client.user}`.")
 
     try:
         asyncio.run(client.start(token))
     except Exception as exc:
         logging.exception("Discord presence client stopped: %s", exc)
+
+
+async def sync_research_command(tree) -> None:
+    if not env_enabled("DISCORD_ENABLE_RESEARCH_COMMAND", True):
+        logging.info("Discord /researchplan command disabled.")
+        return
+    try:
+        guild_id = (os.getenv("DISCORD_COMMAND_GUILD_ID") or os.getenv("GUILD_ID") or "").strip()
+        if guild_id:
+            import discord
+
+            guild = discord.Object(id=int(guild_id))
+            tree.copy_global_to(guild=guild)
+            synced = await tree.sync(guild=guild)
+            logging.info("Synced %d Discord guild command(s) for %s.", len(synced), guild_id)
+            return
+        synced = await tree.sync()
+        logging.info("Synced %d Discord global command(s).", len(synced))
+    except Exception as exc:
+        logging.exception("Discord command sync failed: %s", exc)
+
+
+def env_enabled(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_research_plan_message() -> str:
+    payload = read_json_env_path("BOT_TICKER_RESEARCH_PATH", "ticker_research.json")
+    state = read_json_env_path("BOT_STATE_PATH", "alpaca_stock_bot_state.json")
+    if not payload:
+        return (
+            "**Research plan**\n"
+            "No ticker research file exists yet. It should appear after the overnight research loop runs, "
+            "or after `python pretrade_research.py` is run locally."
+        )
+
+    reports = payload.get("reports") or {}
+    candidate = payload.get("candidate") or {}
+    lines = ["**Research plan**"]
+    created_at = payload.get("created_at")
+    if created_at:
+        lines.append(f"Updated: `{created_at}`")
+    if candidate:
+        lines.append(
+            "Next best from research: "
+            f"`{candidate.get('ticker', 'n/a')}` `{candidate.get('direction', 'n/a')}` "
+            f"score `{float(candidate.get('score', 0.0)):.2f}`"
+        )
+    else:
+        lines.append("Next best from research: `none yet`")
+
+    lines.append("")
+    lines.append("**Ticker notes**")
+    for ticker, report in top_research_reports(reports):
+        recommendation = str(report.get("recommendation", "watch"))
+        direction = str(report.get("preferred_direction", "n/a"))
+        score = float(report.get("score", 0.0) or 0.0)
+        price = float(report.get("price", 0.0) or 0.0)
+        reasons = report.get("reasons") or []
+        reason = str(reasons[0]) if reasons else "no reason saved"
+        lines.append(f"`{ticker}` {recommendation} / {direction} score `{score:.2f}` price `${price:.2f}`")
+        lines.append(f"- {reason[:150]}")
+
+    scan = state.get("last_option_scan") if isinstance(state, dict) else {}
+    best_scan = (scan or {}).get("best")
+    if best_scan:
+        lines.append("")
+        lines.append(
+            "**Latest live scan** "
+            f"`{best_scan.get('ticker')}` `{best_scan.get('direction')}` score `{float(best_scan.get('score', 0.0)):.2f}`"
+        )
+
+    text = "\n".join(lines)
+    if len(text) > 1900:
+        text = text[:1850].rstrip() + "\n...trimmed"
+    return text
+
+
+def read_json_env_path(env_name: str, default: str) -> dict:
+    path = Path(os.getenv(env_name, default))
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+        return payload if isinstance(payload, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        logging.info("Could not read %s at %s: %s", env_name, path, exc)
+        return {}
+
+
+def top_research_reports(reports: dict) -> list[tuple[str, dict]]:
+    def sort_key(item: tuple[str, dict]) -> tuple[int, float]:
+        report = item[1] or {}
+        recommendation = str(report.get("recommendation", "watch"))
+        priority = {
+            "prefer_call": 4,
+            "prefer_put": 4,
+            "watch": 2,
+            "avoid": 1,
+        }.get(recommendation, 0)
+        return priority, float(report.get("score", 0.0) or 0.0)
+
+    clean = [(str(ticker).upper(), report) for ticker, report in reports.items() if isinstance(report, dict)]
+    clean.sort(key=sort_key, reverse=True)
+    return clean[:8]

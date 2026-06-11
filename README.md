@@ -116,9 +116,15 @@ Alternative setup:
 DISCORD_TOKEN=your_bot_token
 DISCORD_TRADE_CHANNEL_ID=your_channel_id
 DISCORD_SHOW_ONLINE=true
+DISCORD_ENABLE_RESEARCH_COMMAND=true
+DISCORD_COMMAND_GUILD_ID=your_server_id_optional
 ```
 
-The bot sends messages when it records an opened trade, records a closed trade, or submits a manual close/trim from the dashboard. If `DISCORD_TOKEN` is set, Railway also starts a tiny no-command Discord client so the bot shows online. Discord failures are logged but do not block trading.
+The bot sends messages when it records an opened trade, records a closed trade, or submits a manual close/trim from the dashboard. If `DISCORD_TOKEN` is set, Railway also starts a tiny Discord client so the bot shows online. Discord failures are logged but do not block trading.
+
+Discord command:
+
+- `/researchplan` shows the overnight ticker research, the likely next-session candidate, and the latest live scan. This is the only slash command registered by this Railway bot. Set `DISCORD_COMMAND_GUILD_ID` to your Discord server ID if you want the command to appear quickly and avoid old global-command clutter.
 
 ## Risk Checks
 
