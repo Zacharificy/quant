@@ -153,12 +153,18 @@ class StrategyConfig:
     high_price_option_threshold: float = 100.0
     max_option_spread_pct: float = 0.45
     max_option_model_premium_ratio: float = 1.75
+    min_option_abs_delta: float = 0.22
+    max_option_abs_delta: float = 0.72
+    max_option_theta_decay_pct: float = 0.18
+    min_option_delta_theta_score: float = 1.75
     min_realized_vol: float = 0.12
     max_realized_vol: float = 1.50
     option_profit_target_pct: float = 0.60
     option_stop_loss_pct: float = 0.25
     option_max_hold_days: int = 5
     cancel_stale_order_minutes: int = 30
+    min_learning_trades_per_setup: int = 6
+    min_learning_trades_broad: int = 10
     block_on_macro_news: bool = True
     use_external_macro_news: bool = True
     use_insiderfinance_gex: bool = True
@@ -543,11 +549,25 @@ class AlpacaStockBot:
             "max_option_model_premium_ratio": env_float(
                 "BOT_MAX_OPTION_MODEL_PREMIUM_RATIO", config.max_option_model_premium_ratio, 0.0
             ),
+            "min_option_abs_delta": env_float("BOT_MIN_OPTION_ABS_DELTA", config.min_option_abs_delta, 0.0),
+            "max_option_abs_delta": env_float("BOT_MAX_OPTION_ABS_DELTA", config.max_option_abs_delta, 0.0),
+            "max_option_theta_decay_pct": env_float(
+                "BOT_MAX_OPTION_THETA_DECAY_PCT", config.max_option_theta_decay_pct, 0.0
+            ),
+            "min_option_delta_theta_score": env_float(
+                "BOT_MIN_OPTION_DELTA_THETA_SCORE", config.min_option_delta_theta_score, 0.0
+            ),
             "option_profit_target_pct": env_float(
                 "BOT_OPTION_PROFIT_TARGET_PCT", config.option_profit_target_pct, 0.0
             ),
             "option_stop_loss_pct": env_float("BOT_OPTION_STOP_LOSS_PCT", config.option_stop_loss_pct, 0.01),
             "option_max_hold_days": env_int("BOT_OPTION_MAX_HOLD_DAYS", config.option_max_hold_days, 1),
+            "min_learning_trades_per_setup": env_int(
+                "BOT_MIN_LEARNING_TRADES_PER_SETUP", config.min_learning_trades_per_setup, 1
+            ),
+            "min_learning_trades_broad": env_int(
+                "BOT_MIN_LEARNING_TRADES_BROAD", config.min_learning_trades_broad, 1
+            ),
             "min_market_score": env_int("BOT_MIN_MARKET_SCORE", config.min_market_score, 0),
             "max_gap_pct": env_float("BOT_MAX_GAP_PCT", config.max_gap_pct, 0.0),
             "max_atr_pct": env_float("BOT_MAX_ATR_PCT", config.max_atr_pct, 0.0),
@@ -2236,7 +2256,8 @@ class AlpacaStockBot:
         for key, key_trades in grouped.items():
             recent = key_trades[-12:]
             is_broad_key = ":*:" in key or key.endswith(":*")
-            if len(recent) < (1 if is_broad_key else 2):
+            min_sample = self.config.min_learning_trades_broad if is_broad_key else self.config.min_learning_trades_per_setup
+            if len(recent) < min_sample:
                 continue
             avg_return = sum(float(trade.get("return_pct", 0.0)) for trade in recent) / len(recent)
             win_rate = sum(1 for trade in recent if float(trade.get("pnl", 0.0)) > 0) / len(recent)
@@ -2285,6 +2306,8 @@ class AlpacaStockBot:
         learning["score_adjustments"] = adjustments
         learning["risk_multiplier"] = risk_multiplier
         learning["stats"] = stats
+        learning["min_setup_sample"] = self.config.min_learning_trades_per_setup
+        learning["min_broad_sample"] = self.config.min_learning_trades_broad
         learning["closed_trade_count"] = len(trades)
         learning["updated_at"] = datetime.now(NY_TZ).isoformat(timespec="seconds")
 
@@ -2426,6 +2449,23 @@ class AlpacaStockBot:
         realized_vol = self.realized_volatility(ticker)
         model_snapshot = black_scholes_snapshot(underlying_price, strike, dte, realized_vol, direction)
         model_price = model_snapshot["price"]
+        greek_reasons = self.option_greek_reasons(model_snapshot, ask, direction)
+        if greek_reasons:
+            logging.info("Skip %s: %s", contract.symbol, "; ".join(greek_reasons))
+            self.state.setdefault("last_option_model_checks", {})[contract.symbol] = {
+                "underlying": ticker,
+                "direction": direction,
+                "ask": ask,
+                "bid": bid,
+                "spread_pct": round(spread_pct, 4),
+                "model_price": round(model_price, 4),
+                "realized_vol": round(realized_vol, 4),
+                "dte": dte,
+                "greeks": model_snapshot,
+                "status": "blocked_greeks",
+                "reasons": greek_reasons,
+            }
+            return False
         max_reasonable_ask = max(0.05, model_price * self.config.max_option_model_premium_ratio)
         if model_price > 0 and ask > max_reasonable_ask:
             logging.info(
@@ -2444,6 +2484,7 @@ class AlpacaStockBot:
                 "model_price": round(model_price, 4),
                 "realized_vol": round(realized_vol, 4),
                 "dte": dte,
+                "greeks": model_snapshot,
                 "status": "blocked_expensive",
             }
             return False
@@ -2574,6 +2615,31 @@ class AlpacaStockBot:
             return 0.30
         return max(self.config.min_realized_vol, min(self.config.max_realized_vol, realized))
 
+    def option_greek_reasons(self, greeks: dict[str, float], premium: float, direction: str) -> list[str]:
+        reasons = []
+        if premium <= 0:
+            return ["invalid option premium"]
+        delta = float(greeks.get("delta", 0.0) or 0.0)
+        theta = float(greeks.get("theta", 0.0) or 0.0)
+        abs_delta = abs(delta)
+        theta_decay_pct = abs(min(theta, 0.0)) / premium
+        delta_theta_score = abs_delta / max(theta_decay_pct, 0.01)
+        if direction == "call" and delta <= 0:
+            reasons.append(f"call delta {delta:.2f} is not bullish")
+        if direction == "put" and delta >= 0:
+            reasons.append(f"put delta {delta:.2f} is not bearish")
+        if abs_delta < self.config.min_option_abs_delta:
+            reasons.append(f"abs delta {abs_delta:.2f} below {self.config.min_option_abs_delta:.2f}")
+        if abs_delta > self.config.max_option_abs_delta:
+            reasons.append(f"abs delta {abs_delta:.2f} above {self.config.max_option_abs_delta:.2f}")
+        if theta_decay_pct > self.config.max_option_theta_decay_pct:
+            reasons.append(f"theta decay {theta_decay_pct:.1%}/day above {self.config.max_option_theta_decay_pct:.1%}")
+        if delta_theta_score < self.config.min_option_delta_theta_score:
+            reasons.append(
+                f"delta/theta score {delta_theta_score:.2f} below {self.config.min_option_delta_theta_score:.2f}"
+            )
+        return reasons
+
     def volatility_sized_stock_cash(self, ticker: str, price: float) -> float:
         """Cap stock cash so one ATR-sized move is near target_stock_risk_cash."""
         try:
@@ -2659,6 +2725,8 @@ class AlpacaStockBot:
         if not contracts:
             return None
         choices = []
+        realized_vol = self.realized_volatility(ticker)
+        direction = "call" if contract_type == ContractType.CALL else "put"
         for contract in contracts:
             quote = self.get_option_quote(contract.symbol)
             if quote is None:
@@ -2673,16 +2741,35 @@ class AlpacaStockBot:
                 continue
             strike = float(contract.strike_price)
             dte = (contract.expiration_date - today).days
+            model_snapshot = black_scholes_snapshot(underlying_price, strike, max(1, dte), realized_vol, direction)
+            greek_reasons = self.option_greek_reasons(model_snapshot, ask, direction)
+            if greek_reasons:
+                self.state.setdefault("last_option_model_checks", {})[contract.symbol] = {
+                    "underlying": ticker,
+                    "direction": direction,
+                    "ask": ask,
+                    "bid": bid,
+                    "spread_pct": round(spread_pct, 4),
+                    "model_price": round(float(model_snapshot.get("price", 0.0) or 0.0), 4),
+                    "realized_vol": round(realized_vol, 4),
+                    "dte": dte,
+                    "greeks": model_snapshot,
+                    "status": "blocked_greeks",
+                    "reasons": greek_reasons,
+                }
+                continue
             dte_penalty = abs(dte - target_dte)
             if contract_type == ContractType.CALL:
                 moneyness_penalty = max(0.0, (underlying_price - strike) / underlying_price) + abs(strike / underlying_price - 1.04)
             else:
                 moneyness_penalty = max(0.0, (strike - underlying_price) / underlying_price) + abs(strike / underlying_price - 0.96)
-            choices.append((dte_penalty, moneyness_penalty, spread_pct, ask, contract, quote))
+            theta_decay_pct = abs(min(float(model_snapshot.get("theta", 0.0) or 0.0), 0.0)) / ask
+            delta_theta_score = abs(float(model_snapshot.get("delta", 0.0) or 0.0)) / max(theta_decay_pct, 0.01)
+            choices.append((dte_penalty, moneyness_penalty, spread_pct, -delta_theta_score, ask, contract, quote))
         if not choices:
             return None
-        choices.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
-        return choices[0][4], choices[0][5]
+        choices.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4]))
+        return choices[0][5], choices[0][6]
 
     def get_option_quote(self, symbol: str) -> tuple[float, float] | None:
         request = OptionLatestQuoteRequest(symbol_or_symbols=symbol, feed=OptionsFeed.INDICATIVE)

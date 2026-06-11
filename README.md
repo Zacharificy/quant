@@ -93,6 +93,10 @@ BOT_MIN_OPTION_SCORE=0.58
 BOT_MIN_ACTIVITY_OPTION_SCORE=0.46
 BOT_MAX_CANDIDATE_COUNT=8
 BOT_MAX_OPTION_SPREAD_PCT=0.45
+BOT_MIN_OPTION_ABS_DELTA=0.22
+BOT_MAX_OPTION_ABS_DELTA=0.72
+BOT_MAX_OPTION_THETA_DECAY_PCT=0.18
+BOT_MIN_OPTION_DELTA_THETA_SCORE=1.75
 BOT_OPTION_PROFIT_TARGET_PCT=0.60
 BOT_OPTION_STOP_LOSS_PCT=0.25
 BOT_MAX_STOCK_TRADE_CASH=600
@@ -153,7 +157,10 @@ For options, the bot only uses long premium:
 - no naked short options
 - no spreads yet
 - option cost must fit the internal paper sizing cap
+- option delta must be in range and theta decay must be reasonable versus premium
 - exits use option profit target, option stop loss, or option time stop
+
+The repo pins Railway to Python `3.13.13` with `.python-version` so Railway does not auto-select a just-released Python patch without a prebuilt image.
 
 ## Self-Learning
 
