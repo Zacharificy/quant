@@ -347,6 +347,17 @@ PAGE = """
       font-size: 13px;
       line-height: 1.45;
     }
+    .decision-box {
+      border: 1px solid #e5ebf1;
+      border-radius: 7px;
+      background: #f8fafc;
+      padding: 10px;
+      margin-bottom: 12px;
+    }
+    .decision-box .reason-list {
+      margin-top: 8px;
+      margin-bottom: 8px;
+    }
 
     .status-pass { color: var(--good); font-weight: 700; }
     .status-blocked { color: var(--bad); font-weight: 700; }
@@ -807,6 +818,20 @@ PAGE = """
           <span>Scanner Results</span>
           <span class="pill">best: {{ last_scan.best or "none" }}</span>
         </summary>
+        {% if last_entry_decision.reasons %}
+          <div class="decision-box">
+            <strong>Last entry decision: {{ last_entry_decision.status }}</strong>
+            <div class="subtle">{{ last_entry_decision.time }}</div>
+            <ul class="reason-list">
+              {% for reason in last_entry_decision.reasons %}
+                <li>{{ reason }}</li>
+              {% endfor %}
+            </ul>
+            {% if last_entry_decision.details_text %}
+              <div class="subtle">{{ last_entry_decision.details_text }}</div>
+            {% endif %}
+          </div>
+        {% endif %}
         <table>
           <thead>
             <tr>
@@ -1161,6 +1186,22 @@ def build_snapshot() -> dict:
     last_news_check = state.get("last_news_check") or {}
     external_macro_raw = state.get("external_macro_news") or {}
     insiderfinance_status = state.get("insiderfinance_gex_status") or {}
+    last_entry_raw = state.get("last_entry_decision") or {}
+    entry_details = last_entry_raw.get("details") or {}
+    detail_parts = []
+    if "option_attempts" in entry_details:
+        detail_parts.append(f"option attempts {entry_details.get('option_attempts')}")
+    if "option_entries_opened" in entry_details:
+        detail_parts.append(f"option entries {entry_details.get('option_entries_opened')}")
+    if entry_details.get("failed_option_underlyings"):
+        detail_parts.append(f"failed options: {', '.join(entry_details.get('failed_option_underlyings') or [])}")
+    if "risk_multiplier" in entry_details:
+        detail_parts.append(f"risk {float(entry_details.get('risk_multiplier') or 0):.2f}x")
+    if "current_bot_exposure" in entry_details and "remaining_bot_budget" in entry_details:
+        detail_parts.append(
+            f"budget used ${float(entry_details.get('current_bot_exposure') or 0):,.2f}; "
+            f"left ${float(entry_details.get('remaining_bot_budget') or 0):,.2f}"
+        )
     source_stats = external_macro_raw.get("source_stats") or {}
     news_source_parts = []
     for source_url, source_info in source_stats.items():
@@ -1251,6 +1292,12 @@ def build_snapshot() -> dict:
         "remaining_bot_budget": money(bot.remaining_bot_budget()),
         "paper_equity_cap": money(bot.config.paper_equity_cap),
         "last_scan": last_scan,
+        "last_entry_decision": {
+            "status": plain_enum(last_entry_raw.get("status", "not checked")),
+            "time": last_entry_raw.get("time", ""),
+            "reasons": last_entry_raw.get("reasons") or [],
+            "details_text": " | ".join(detail_parts),
+        },
         "candidate_rows": candidate_rows,
         "last_option_scan": last_option_scan,
         "option_candidate_rows": option_candidate_rows,

@@ -165,6 +165,8 @@ class StrategyConfig:
     cancel_stale_order_minutes: int = 30
     min_learning_trades_per_setup: int = 6
     min_learning_trades_broad: int = 10
+    min_risk_learning_trades: int = 6
+    allow_stock_after_option: bool = True
     block_on_macro_news: bool = True
     use_external_macro_news: bool = True
     use_insiderfinance_gex: bool = True
@@ -568,6 +570,10 @@ class AlpacaStockBot:
             "min_learning_trades_broad": env_int(
                 "BOT_MIN_LEARNING_TRADES_BROAD", config.min_learning_trades_broad, 1
             ),
+            "min_risk_learning_trades": env_int(
+                "BOT_MIN_RISK_LEARNING_TRADES", config.min_risk_learning_trades, 1
+            ),
+            "allow_stock_after_option": env_bool("BOT_ALLOW_STOCK_AFTER_OPTION", config.allow_stock_after_option),
             "min_market_score": env_int("BOT_MIN_MARKET_SCORE", config.min_market_score, 0),
             "max_gap_pct": env_float("BOT_MAX_GAP_PCT", config.max_gap_pct, 0.0),
             "max_atr_pct": env_float("BOT_MAX_ATR_PCT", config.max_atr_pct, 0.0),
@@ -599,6 +605,12 @@ class AlpacaStockBot:
         clock = self.trading.get_clock()
         if not clock.is_open:
             logging.info("Market is closed. Next open: %s", clock.next_open)
+            self.record_entry_decision(
+                "market_closed",
+                [f"Market closed. Next open: {clock.next_open}"],
+                {"clock_open": False},
+            )
+            save_state(self.state_path, self.state)
             return
 
         today = datetime.now(NY_TZ).date()
@@ -606,6 +618,10 @@ class AlpacaStockBot:
         self.reconcile_open_orders(block_new_entries=False)
         self.cancel_stale_open_orders()
         if not self.reconcile_open_orders():
+            self.record_entry_decision(
+                "blocked_open_orders",
+                ["Open order reconciliation found orders that need to finish or be cancelled first."],
+            )
             save_state(self.state_path, self.state)
             return
         bars = self.fetch_all_bars()
@@ -613,6 +629,10 @@ class AlpacaStockBot:
         positions = self.get_positions()
         self.sync_state_with_positions(positions)
         if not self.validate_state_matches_alpaca():
+            self.record_entry_decision(
+                "blocked_state_mismatch",
+                ["Alpaca positions and local state did not match, so new entries were blocked."],
+            )
             save_state(self.state_path, self.state)
             return
         self.enforce_position_limits()
@@ -623,11 +643,13 @@ class AlpacaStockBot:
         if self.is_trading_paused():
             logging.warning("Trading is paused by local control. Exits/trims checked, no new entries.")
             self.state.setdefault("safety", {})["status"] = "paused"
+            self.record_entry_decision("paused", ["Trading is paused from the dashboard or config."])
             save_state(self.state_path, self.state)
             return
 
         if not self.daily_risk_allows_entries():
             logging.warning("Daily loss limit reached. Exits/trims checked, no new entries.")
+            self.record_entry_decision("blocked_daily_risk", ["Daily loss limit reached. Exits still run, entries blocked."])
             save_state(self.state_path, self.state)
             return
 
@@ -653,28 +675,99 @@ class AlpacaStockBot:
                 break
         if option_entries_opened:
             logging.info("Opened/staged %d option trade(s).", option_entries_opened)
-            save_state(self.state_path, self.state)
-            return
+            if not self.config.allow_stock_after_option:
+                self.record_entry_decision(
+                    "option_entry_opened",
+                    [f"Opened/staged {option_entries_opened} option trade(s). Stock fallback disabled."],
+                    {
+                        "option_entries_opened": option_entries_opened,
+                        "option_attempts": option_attempts,
+                        "remaining_bot_budget": round(self.remaining_bot_budget(), 2),
+                    },
+                )
+                save_state(self.state_path, self.state)
+                return
 
         if not self.config.trade_stocks:
             logging.info("Stock entries disabled; no share position will be opened.")
+            self.record_entry_decision(
+                "stock_entries_disabled",
+                [
+                    "No option order opened and stock entries are disabled."
+                    if not option_entries_opened
+                    else "Option order opened and stock entries are disabled."
+                ],
+                {"option_attempts": option_attempts, "option_entries_opened": option_entries_opened},
+            )
             save_state(self.state_path, self.state)
             return
 
         if len(positions) >= self.config.max_positions:
             logging.info("Max positions already open: %d", len(positions))
+            self.record_entry_decision(
+                "max_stock_positions",
+                [f"Already at max stock positions: {len(positions)}/{self.config.max_positions}."],
+                {"option_attempts": option_attempts, "option_entries_opened": option_entries_opened},
+            )
             save_state(self.state_path, self.state)
             return
 
         candidate = self.find_best_stock(today, bars, positions, news)
         if candidate is None:
             logging.info("No stock passed the scanner today.")
+            option_best = (self.state.get("last_option_scan") or {}).get("best") or {}
+            stock_best = (self.state.get("last_scan") or {}).get("best")
+            reasons = ["No stock passed the scanner today."]
+            if option_entries_opened:
+                reasons.insert(0, f"Opened/staged {option_entries_opened} option trade(s).")
+            elif option_attempts:
+                reasons.insert(0, f"Tried {option_attempts} option candidate(s), but none produced an order.")
+            else:
+                reasons.insert(0, "No option candidate passed the scanner.")
+            self.record_entry_decision(
+                "no_entry",
+                reasons,
+                {
+                    "option_attempts": option_attempts,
+                    "option_entries_opened": option_entries_opened,
+                    "failed_option_underlyings": sorted(failed_option_underlyings),
+                    "best_option": option_best,
+                    "best_stock": stock_best,
+                    "risk_multiplier": self.learning_risk_multiplier(),
+                    "current_bot_exposure": round(self.current_bot_exposure_cash(), 2),
+                    "remaining_bot_budget": round(self.remaining_bot_budget(), 2),
+                },
+            )
             save_state(self.state_path, self.state)
             return
 
         ticker, score, price = candidate
-        self.enter_position(ticker, score, price)
+        stock_order_opened = self.enter_position(ticker, score, price)
+        self.record_entry_decision(
+            "entry_submitted" if stock_order_opened else "entry_sized_out",
+            [
+                f"Stock fallback submitted {ticker} at score {score:.2f}."
+                if stock_order_opened
+                else f"Stock fallback selected {ticker}, but sizing/budget blocked the order."
+            ],
+            {
+                "ticker": ticker,
+                "score": round(score, 4),
+                "price": round(price, 4),
+                "option_attempts": option_attempts,
+                "option_entries_opened": option_entries_opened,
+                "remaining_bot_budget": round(self.remaining_bot_budget(), 2),
+            },
+        )
         save_state(self.state_path, self.state)
+
+    def record_entry_decision(self, status: str, reasons: list[str], details: dict | None = None) -> None:
+        self.state["last_entry_decision"] = {
+            "time": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+            "status": status,
+            "reasons": reasons,
+            "details": details or {},
+        }
 
     def is_trading_paused(self) -> bool:
         return bool(self.state.setdefault("controls", {}).get("trading_paused", False))
@@ -2277,7 +2370,7 @@ class AlpacaStockBot:
             "profit_factor": None,
             "consecutive_losses": 0,
         }
-        if len(recent_all) >= 3:
+        if len(recent_all) >= self.config.min_risk_learning_trades:
             wins = [trade for trade in recent_all if float(trade.get("pnl", 0.0)) > 0]
             losses = [trade for trade in recent_all if float(trade.get("pnl", 0.0)) <= 0]
             gross_profit = sum(float(trade.get("pnl", 0.0)) for trade in wins)
@@ -2308,6 +2401,7 @@ class AlpacaStockBot:
         learning["stats"] = stats
         learning["min_setup_sample"] = self.config.min_learning_trades_per_setup
         learning["min_broad_sample"] = self.config.min_learning_trades_broad
+        learning["min_risk_sample"] = self.config.min_risk_learning_trades
         learning["closed_trade_count"] = len(trades)
         learning["updated_at"] = datetime.now(NY_TZ).isoformat(timespec="seconds")
 
@@ -2318,7 +2412,7 @@ class AlpacaStockBot:
         last_exit = datetime.fromisoformat(raw).date()
         return (today - last_exit).days < self.config.cooldown_days
 
-    def enter_position(self, ticker: str, score: float, price: float) -> None:
+    def enter_position(self, ticker: str, score: float, price: float) -> bool:
         account = self.trading.get_account()
         buying_power = float(account.buying_power)
         cash = float(account.cash)
@@ -2337,7 +2431,7 @@ class AlpacaStockBot:
                 self.current_bot_exposure_cash(),
                 self.config.paper_equity_cap,
             )
-            return
+            return False
         if quantity <= 0:
             logging.info(
                 "Skip %s: price %.2f is too high for order cash %.2f / remaining bot budget %.2f",
@@ -2346,7 +2440,7 @@ class AlpacaStockBot:
                 order_cash,
                 remaining_budget,
             )
-            return
+            return False
 
         stop_price = None
         take_profit_price = None
@@ -2400,6 +2494,7 @@ class AlpacaStockBot:
                 "entry_order_id": str(order.id),
             }
         )
+        return True
 
     def enter_option_position(self, ticker: str, score: float, underlying_price: float, direction: str) -> bool:
         if ticker in self.open_option_underlyings():
