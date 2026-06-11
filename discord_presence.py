@@ -48,18 +48,36 @@ def _run_presence_client(token: str) -> None:
     @client.event
     async def on_ready():
         logging.info("Discord presence online as %s", client.user)
-        try:
-            activity = discord.Activity(type=discord.ActivityType.watching, name="paper trades")
-            await client.change_presence(status=discord.Status.online, activity=activity)
-        except Exception as exc:
-            logging.warning("Could not set Discord presence: %s", exc)
+        await update_profit_presence(client, discord)
         await sync_research_command(tree)
-        notifier.send(f"**Trading bot is online**\nLogged in as `{client.user}`.")
+        if env_enabled("DISCORD_ANNOUNCE_ONLINE", False):
+            notifier.send(f"**Trading bot is online**\nLogged in as `{client.user}`.")
+        if not getattr(client, "_presence_loop_started", False):
+            client._presence_loop_started = True
+            client.loop.create_task(presence_loop(client, discord))
 
     try:
         asyncio.run(client.start(token))
     except Exception as exc:
         logging.exception("Discord presence client stopped: %s", exc)
+
+
+async def presence_loop(client, discord_module) -> None:
+    interval = max(60, int(float(os.getenv("DISCORD_STATUS_REFRESH_SECONDS", "300"))))
+    while not client.is_closed():
+        await asyncio.sleep(interval)
+        await update_profit_presence(client, discord_module)
+
+
+async def update_profit_presence(client, discord_module) -> None:
+    try:
+        pnl = all_time_pnl()
+        marker = "🔵" if pnl >= 0 else "🔴"
+        label = f"{marker} All-time P/L {format_money(pnl)}"
+        activity = discord_module.Activity(type=discord_module.ActivityType.watching, name=label[:120])
+        await client.change_presence(status=discord_module.Status.online, activity=activity)
+    except Exception as exc:
+        logging.warning("Could not set Discord P/L presence: %s", exc)
 
 
 async def sync_research_command(tree) -> None:
@@ -102,6 +120,7 @@ def build_research_plan_message() -> str:
     reports = payload.get("reports") or {}
     candidate = payload.get("candidate") or {}
     lines = ["**Research plan**"]
+    lines.append(f"All-time P/L: `{format_money(all_time_pnl())}`")
     created_at = payload.get("created_at")
     if created_at:
         lines.append(f"Updated: `{created_at}`")
@@ -152,6 +171,24 @@ def read_json_env_path(env_name: str, default: str) -> dict:
     except Exception as exc:
         logging.info("Could not read %s at %s: %s", env_name, path, exc)
         return {}
+
+
+def all_time_pnl() -> float:
+    state = read_json_env_path("BOT_STATE_PATH", "alpaca_stock_bot_state.json")
+    trade_history = state.get("trade_history") if isinstance(state, dict) else {}
+    trades = (trade_history or {}).get("closed_trades") or []
+    total = 0.0
+    for trade in trades:
+        try:
+            total += float(trade.get("pnl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def format_money(value: float) -> str:
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(value):,.2f}"
 
 
 def top_research_reports(reports: dict) -> list[tuple[str, dict]]:

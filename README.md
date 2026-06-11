@@ -96,9 +96,11 @@ BOT_MAX_OPTION_SPREAD_PCT=0.45
 BOT_OPTION_PROFIT_TARGET_PCT=0.60
 BOT_OPTION_STOP_LOSS_PCT=0.25
 BOT_MAX_STOCK_TRADE_CASH=600
+BOT_FOCUS_LIQUID_UNIVERSE=true
+BOT_EXTRA_TICKERS=
 ```
 
-The stock sleeve matters because the QuantConnect-style test was stock based. The live bot can still trade long calls/puts, but if the option chain is too expensive or too wide, it can now fall back to stock entries instead of sitting idle.
+The stock sleeve matters because the QuantConnect-style test was stock based. The live bot can still trade long calls/puts, but if the option chain is too expensive or too wide, it can now fall back to stock entries instead of sitting idle. `BOT_FOCUS_LIQUID_UNIVERSE=true` keeps the live scanner focused on SPY/major ETFs plus liquid names with tighter spreads. Use `BOT_EXTRA_TICKERS=F,AMC` only when you intentionally want extra names added back.
 
 ## Discord Trade Notifications
 
@@ -116,11 +118,13 @@ Alternative setup:
 DISCORD_TOKEN=your_bot_token
 DISCORD_TRADE_CHANNEL_ID=your_channel_id
 DISCORD_SHOW_ONLINE=true
+DISCORD_ANNOUNCE_ONLINE=false
+DISCORD_STATUS_REFRESH_SECONDS=300
 DISCORD_ENABLE_RESEARCH_COMMAND=true
 DISCORD_COMMAND_GUILD_ID=your_server_id_optional
 ```
 
-The bot sends messages when it records an opened trade, records a closed trade, or submits a manual close/trim from the dashboard. If `DISCORD_TOKEN` is set, Railway also starts a tiny Discord client so the bot shows online. Discord failures are logged but do not block trading.
+The bot sends messages when it records an opened trade, records a closed trade, or submits a manual close/trim from the dashboard. If `DISCORD_TOKEN` is set, Railway also starts a tiny Discord client so the bot shows online and updates its status to all-time closed-trade P/L. `DISCORD_ANNOUNCE_ONLINE=false` prevents the repeated "Trading bot is online" message on each redeploy/reconnect. Discord failures are logged but do not block trading.
 
 Discord command:
 

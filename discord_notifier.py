@@ -57,8 +57,9 @@ class DiscordNotifier:
 
     def trade_entry(self, trade: dict) -> None:
         asset_type = str(trade.get("asset_type", "")).upper() or "TRADE"
-        ticker = trade.get("ticker") or trade.get("symbol") or "UNKNOWN"
+        ticker = _clean_symbol(trade.get("ticker") or trade.get("symbol") or "UNKNOWN")
         direction = str(trade.get("direction", "")).upper()
+        marker = _direction_marker(direction)
         order_id = trade.get("entry_order_id", "")
         score = _fmt_float(trade.get("score"), 2)
         now = datetime.now(NY_TZ).strftime("%Y-%m-%d %I:%M:%S %p ET")
@@ -67,11 +68,11 @@ class DiscordNotifier:
             contracts = trade.get("contracts", "?")
             entry_price = _fmt_money(trade.get("entry_price"))
             cost = _fmt_money(trade.get("notional_cost"))
-            symbol = trade.get("symbol", ticker)
+            symbol = _clean_symbol(trade.get("symbol", ticker))
             strike = _fmt_float(trade.get("strike"), 2)
             dte = trade.get("dte_at_entry", "?")
             self.send(
-                "**Opened Option Position**\n"
+                f"{marker} **Opened Option Position**\n"
                 f"{now}\n"
                 f"{ticker} {direction} | `{symbol}`\n"
                 f"Contracts: {contracts} | Entry: {entry_price} | Est. cost: {cost}\n"
@@ -83,7 +84,7 @@ class DiscordNotifier:
         qty = trade.get("qty", "?")
         entry_price = _fmt_money(trade.get("entry_price"))
         self.send(
-            "**Opened Stock Position**\n"
+            f"{marker} **Opened Stock Position**\n"
             f"{now}\n"
             f"{ticker} {direction}\n"
             f"Qty: {qty} | Entry: {entry_price} | Score: {score}\n"
@@ -92,9 +93,10 @@ class DiscordNotifier:
 
     def trade_exit(self, trade: dict) -> None:
         asset_type = str(trade.get("asset_type", "")).upper() or "TRADE"
-        ticker = trade.get("ticker") or trade.get("symbol") or "UNKNOWN"
+        ticker = _clean_symbol(trade.get("ticker") or trade.get("symbol") or "UNKNOWN")
         direction = str(trade.get("direction", "")).upper()
         pnl = _fmt_money(trade.get("pnl"))
+        marker = _pnl_marker(trade.get("pnl"))
         return_pct = _fmt_pct(trade.get("return_pct"))
         reason = trade.get("reason", "exit")
         order_id = trade.get("exit_order_id", "")
@@ -102,10 +104,10 @@ class DiscordNotifier:
         now = datetime.now(NY_TZ).strftime("%Y-%m-%d %I:%M:%S %p ET")
 
         if asset_type == "OPTION":
-            symbol = trade.get("symbol", ticker)
+            symbol = _clean_symbol(trade.get("symbol", ticker))
             contracts = trade.get("contracts", "?")
             self.send(
-                "**Closed Option Position**\n"
+                f"{marker} **Closed Option Position**\n"
                 f"{now}\n"
                 f"{ticker} {direction} | `{symbol}`\n"
                 f"Contracts: {contracts} | P/L: {pnl} ({return_pct})\n"
@@ -116,7 +118,7 @@ class DiscordNotifier:
 
         qty = trade.get("qty", "?")
         self.send(
-            "**Closed Stock Position**\n"
+            f"{marker} **Closed Stock Position**\n"
             f"{now}\n"
             f"{ticker} {direction}\n"
             f"Qty: {qty} | P/L: {pnl} ({return_pct})\n"
@@ -126,10 +128,11 @@ class DiscordNotifier:
 
     def order_submitted(self, action: str, symbol: str, qty: int, order_id: str, reason: str) -> None:
         now = datetime.now(NY_TZ).strftime("%Y-%m-%d %I:%M:%S %p ET")
+        marker = _direction_marker(action)
         self.send(
-            f"**{action} Submitted**\n"
+            f"{marker} **{action} Submitted**\n"
             f"{now}\n"
-            f"`{symbol}` qty/contracts: {qty}\n"
+            f"`{_clean_symbol(symbol)}` qty/contracts: {qty}\n"
             f"Reason: {reason}\n"
             f"Order: `{order_id}`"
         )
@@ -176,3 +179,22 @@ def _fmt_pct(value) -> str:
         return f"{float(value) * 100:.1f}%"
     except (TypeError, ValueError):
         return "?%"
+
+
+def _pnl_marker(value) -> str:
+    try:
+        return "🔵⬆️" if float(value) >= 0 else "🔴⬇️"
+    except (TypeError, ValueError):
+        return "🔵⬆️"
+
+
+def _direction_marker(value) -> str:
+    text = str(value or "").upper()
+    if "PUT" in text or "SELL" in text or "SHORT" in text:
+        return "🔴⬇️"
+    return "🔵⬆️"
+
+
+def _clean_symbol(value) -> str:
+    text = str(value or "UNKNOWN").strip().upper()
+    return "".join(ch for ch in text if ch.isalnum() or ch in {".", "-", "_"})

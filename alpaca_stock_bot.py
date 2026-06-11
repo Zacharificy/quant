@@ -69,6 +69,17 @@ DEFAULT_TICKERS = (
     "PLTR",
     "SOFI",
 )
+LIQUID_FOCUS_TICKERS = (
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMD",
+    "AVGO",
+)
 
 TICKER_BUCKETS = {
     "SPY": "broad_index",
@@ -229,6 +240,22 @@ def save_state(path: Path, state: dict) -> None:
 
 def normalize_ticker(ticker: str) -> str:
     return "".join(ch for ch in ticker.upper().strip() if ch.isalnum() or ch in {".", "-"})
+
+
+def env_flag(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_env_tickers(name: str) -> list[str]:
+    tickers = []
+    for part in os.getenv(name, "").split(","):
+        ticker = normalize_ticker(part)
+        if ticker and ticker not in tickers:
+            tickers.append(ticker)
+    return tickers
 
 
 def read_watchlist(path: Path | None = None) -> list[str]:
@@ -417,10 +444,19 @@ class AlpacaStockBot:
         path = cls.watchlist_path()
         if not path.exists():
             save_watchlist(path, list(config.tickers))
-            return config
-        tickers = read_watchlist(path)
-        if not tickers:
             tickers = list(config.tickers)
+        else:
+            tickers = read_watchlist(path)
+            if not tickers:
+                tickers = list(config.tickers)
+        if env_flag("BOT_FOCUS_LIQUID_UNIVERSE", True):
+            focused = list(LIQUID_FOCUS_TICKERS)
+            extras = parse_env_tickers("BOT_EXTRA_TICKERS")
+            for ticker in extras:
+                if ticker not in focused:
+                    focused.append(ticker)
+            tickers = focused
+            logging.info("Liquid-focus universe enabled: %s", ", ".join(tickers))
         return replace(config, tickers=tuple(tickers))
 
     @staticmethod
