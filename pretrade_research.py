@@ -150,6 +150,75 @@ def summarize_news_items(items: list[dict]) -> list[dict]:
     return summaries
 
 
+def format_research_summary(payload: dict, max_tickers: int = 8, include_news: bool = True) -> str:
+    reports = payload.get("reports") or {}
+    candidate = payload.get("candidate") or {}
+    lines = ["**Ticker research summary**"]
+    created_at = payload.get("created_at")
+    if created_at:
+        lines.append(f"Updated: `{created_at}`")
+    if candidate:
+        lines.append(
+            "Best next-session idea: "
+            f"`{candidate.get('ticker', 'n/a')}` `{candidate.get('direction', 'n/a')}` "
+            f"score `{float(candidate.get('score', 0.0) or 0.0):.2f}`"
+        )
+    else:
+        lines.append("Best next-session idea: `none`")
+
+    lines.append("")
+    for ticker, report in top_research_reports(reports, max_tickers=max_tickers):
+        recommendation = str(report.get("recommendation", "watch"))
+        direction = str(report.get("preferred_direction", "n/a"))
+        score = float(report.get("score", 0.0) or 0.0)
+        price = float(report.get("price", 0.0) or 0.0)
+        rsi = float(report.get("rsi_14", 0.0) or 0.0)
+        marker = research_marker(recommendation, direction)
+        lines.append(f"{marker} `{ticker}` {recommendation} / {direction} score `{score:.2f}` price `${price:.2f}` RSI `{rsi:.1f}`")
+        reasons = report.get("reasons") or []
+        for reason in reasons[:2]:
+            lines.append(f"- {str(reason)[:160]}")
+        if include_news:
+            news = report.get("news") or []
+            if news:
+                headline = str(news[0].get("headline") or "").strip()
+                summary = str(news[0].get("summary") or "").strip()
+                snippet = headline or summary
+                if snippet:
+                    lines.append(f"- news: {snippet[:180]}")
+
+    text = "\n".join(lines)
+    if len(text) > 1900:
+        text = text[:1850].rstrip() + "\n...trimmed"
+    return text
+
+
+def top_research_reports(reports: dict, max_tickers: int = 8) -> list[tuple[str, dict]]:
+    def sort_key(item: tuple[str, dict]) -> tuple[int, float]:
+        report = item[1] or {}
+        recommendation = str(report.get("recommendation", "watch"))
+        priority = {
+            "prefer_call": 4,
+            "prefer_put": 4,
+            "watch": 2,
+            "avoid": 1,
+        }.get(recommendation, 0)
+        return priority, float(report.get("score", 0.0) or 0.0)
+
+    clean = [(str(ticker).upper(), report) for ticker, report in reports.items() if isinstance(report, dict)]
+    clean.sort(key=sort_key, reverse=True)
+    return clean[:max_tickers]
+
+
+def research_marker(recommendation: str, direction: str) -> str:
+    text = f"{recommendation} {direction}".lower()
+    if "put" in text or "avoid" in text:
+        return "🔴⬇️"
+    if "call" in text:
+        return "🔵⬆️"
+    return "🔵"
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     print(json.dumps(run_pretrade_research(), indent=2))

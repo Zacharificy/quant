@@ -11,7 +11,7 @@ from auto_research import run_autoresearch
 from dashboard import app
 from discord_notifier import DiscordNotifier
 from discord_presence import start_discord_presence
-from pretrade_research import run_pretrade_research
+from pretrade_research import format_research_summary, run_pretrade_research
 
 
 def env_flag(name, default=True):
@@ -132,11 +132,7 @@ def run_autoresearch_loop():
                         "last_ticker_research_reports": len(ticker_payload.get("reports") or {}),
                     }
                 )
-                notifier.send(
-                    "**Ticker research finished**\n"
-                    f"Reports: `{len((ticker_payload.get('reports') or {}))}` | "
-                    f"Researched: `{', '.join((ticker_payload.get('researched_tickers') or [])[:8])}`"
-                )
+                notifier.send(format_research_summary(ticker_payload, max_tickers=8, include_news=True))
 
             if parameter_due:
                 logging.info("Starting after-hours parameter autoresearch for %s. apply=%s", run_date, apply_settings)

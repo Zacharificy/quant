@@ -6,6 +6,7 @@ from pathlib import Path
 import threading
 
 from discord_notifier import DiscordNotifier
+from pretrade_research import format_research_summary
 
 
 def _enabled() -> bool:
@@ -117,33 +118,9 @@ def build_research_plan_message() -> str:
             "or after `python pretrade_research.py` is run locally."
         )
 
-    reports = payload.get("reports") or {}
-    candidate = payload.get("candidate") or {}
     lines = ["**Research plan**"]
     lines.append(f"All-time P/L: `{format_money(all_time_pnl())}`")
-    created_at = payload.get("created_at")
-    if created_at:
-        lines.append(f"Updated: `{created_at}`")
-    if candidate:
-        lines.append(
-            "Next best from research: "
-            f"`{candidate.get('ticker', 'n/a')}` `{candidate.get('direction', 'n/a')}` "
-            f"score `{float(candidate.get('score', 0.0)):.2f}`"
-        )
-    else:
-        lines.append("Next best from research: `none yet`")
-
-    lines.append("")
-    lines.append("**Ticker notes**")
-    for ticker, report in top_research_reports(reports):
-        recommendation = str(report.get("recommendation", "watch"))
-        direction = str(report.get("preferred_direction", "n/a"))
-        score = float(report.get("score", 0.0) or 0.0)
-        price = float(report.get("price", 0.0) or 0.0)
-        reasons = report.get("reasons") or []
-        reason = str(reasons[0]) if reasons else "no reason saved"
-        lines.append(f"`{ticker}` {recommendation} / {direction} score `{score:.2f}` price `${price:.2f}`")
-        lines.append(f"- {reason[:150]}")
+    lines.append(format_research_summary(payload, max_tickers=8, include_news=True))
 
     scan = state.get("last_option_scan") if isinstance(state, dict) else {}
     best_scan = (scan or {}).get("best")
@@ -189,20 +166,3 @@ def all_time_pnl() -> float:
 def format_money(value: float) -> str:
     sign = "+" if value >= 0 else "-"
     return f"{sign}${abs(value):,.2f}"
-
-
-def top_research_reports(reports: dict) -> list[tuple[str, dict]]:
-    def sort_key(item: tuple[str, dict]) -> tuple[int, float]:
-        report = item[1] or {}
-        recommendation = str(report.get("recommendation", "watch"))
-        priority = {
-            "prefer_call": 4,
-            "prefer_put": 4,
-            "watch": 2,
-            "avoid": 1,
-        }.get(recommendation, 0)
-        return priority, float(report.get("score", 0.0) or 0.0)
-
-    clean = [(str(ticker).upper(), report) for ticker, report in reports.items() if isinstance(report, dict)]
-    clean.sort(key=sort_key, reverse=True)
-    return clean[:8]
