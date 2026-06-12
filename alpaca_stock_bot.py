@@ -163,6 +163,10 @@ class StrategyConfig:
     max_realized_vol: float = 1.50
     option_profit_target_pct: float = 0.60
     option_stop_loss_pct: float = 0.25
+    option_trailing_stop_enabled: bool = True
+    option_trail_start_r: float = 1.0
+    option_trail_step_r: float = 1.0
+    index_long_only: bool = True
     option_max_hold_days: int = 5
     cancel_stale_order_minutes: int = 30
     min_learning_trades_per_setup: int = 6
@@ -566,6 +570,12 @@ class AlpacaStockBot:
                 "BOT_OPTION_PROFIT_TARGET_PCT", config.option_profit_target_pct, 0.0
             ),
             "option_stop_loss_pct": env_float("BOT_OPTION_STOP_LOSS_PCT", config.option_stop_loss_pct, 0.01),
+            "option_trailing_stop_enabled": env_bool(
+                "BOT_OPTION_TRAILING_STOP_ENABLED", config.option_trailing_stop_enabled
+            ),
+            "option_trail_start_r": env_float("BOT_OPTION_TRAIL_START_R", config.option_trail_start_r, 0.0),
+            "option_trail_step_r": env_float("BOT_OPTION_TRAIL_STEP_R", config.option_trail_step_r, 0.1),
+            "index_long_only": env_bool("BOT_INDEX_LONG_ONLY", config.index_long_only),
             "option_max_hold_days": env_int("BOT_OPTION_MAX_HOLD_DAYS", config.option_max_hold_days, 1),
             "min_learning_trades_per_setup": env_int(
                 "BOT_MIN_LEARNING_TRADES_PER_SETUP", config.min_learning_trades_per_setup, 1
@@ -1853,6 +1863,11 @@ class AlpacaStockBot:
                 }
                 continue
             direction, score, reasons = self.score_directional_trade(ticker, df)
+            if self.config.index_long_only and ticker in {"SPY", "QQQ", "IWM", "DIA"} and direction == "put":
+                score, reasons = self.score_stock(ticker, df)
+                direction = "call"
+                if reasons:
+                    reasons = ["index long-only: skipped put; no clean call setup"] + reasons[:2]
             macro_relief = self.has_macro_relief() and ticker in {"SPY", "QQQ", "IWM", "DIA"}
             if macro_relief:
                 direction = "call"
@@ -2073,12 +2088,15 @@ class AlpacaStockBot:
         support_retest = float(recent["low"].min()) <= support + tolerance and price > support + (atr * 0.35)
         reclaimed_fast = float(df.iloc[-2]["close"]) < fast <= price
         held_prior_breakout = price > resistance and low >= resistance - tolerance
+        swept_support_reclaim = low < support - tolerance and price > support + (atr * 0.25)
 
         structure_score = 0.0
         if broke_resistance:
             structure_score = max(structure_score, min((price - resistance) / max(atr, tolerance), 1.0))
         if support_retest:
             structure_score = max(structure_score, 0.75)
+        if swept_support_reclaim:
+            structure_score = max(structure_score, 0.78)
         if held_prior_breakout:
             structure_score = max(structure_score, 0.65)
         if reclaimed_fast:
@@ -2129,12 +2147,15 @@ class AlpacaStockBot:
         resistance_reject = float(recent["high"].max()) >= resistance - tolerance and price < resistance - (atr * 0.35)
         lost_fast = float(df.iloc[-2]["close"]) > fast >= price
         held_prior_breakdown = price < support and high <= support + tolerance
+        swept_resistance_reject = high > resistance + tolerance and price < resistance - (atr * 0.25)
 
         structure_score = 0.0
         if broke_support:
             structure_score = max(structure_score, min((support - price) / max(atr, tolerance), 1.0))
         if resistance_reject:
             structure_score = max(structure_score, 0.75)
+        if swept_resistance_reject:
+            structure_score = max(structure_score, 0.78)
         if held_prior_breakdown:
             structure_score = max(structure_score, 0.65)
         if lost_fast:
@@ -2984,8 +3005,24 @@ class AlpacaStockBot:
             underlying_return = None
             if current_underlying_price and entry_underlying_price > 0:
                 underlying_return = current_underlying_price / entry_underlying_price - 1
+            best_bid = max(float(entry.get("best_bid", entry_price) or entry_price), bid)
+            entry["best_bid"] = best_bid
+            trail_stop = float(entry.get("trailing_stop_price", 0.0) or 0.0)
+            if self.config.option_trailing_stop_enabled and entry_price > 0 and bid > 0:
+                risk_per_contract = entry_price * self.config.option_stop_loss_pct
+                if risk_per_contract > 0:
+                    profit_r = max(0.0, (best_bid - entry_price) / risk_per_contract)
+                    if profit_r >= self.config.option_trail_start_r:
+                        locked_r = math.floor((profit_r - self.config.option_trail_start_r) / self.config.option_trail_step_r)
+                        locked_r = max(0, locked_r)
+                        candidate_stop = entry_price + (locked_r * risk_per_contract)
+                        trail_stop = max(trail_stop, round_price(candidate_stop))
+                        entry["trailing_stop_price"] = trail_stop
+                        entry["trailing_profit_r"] = round(profit_r, 2)
             reason = None
-            if bid >= entry_price * (1 + self.config.option_profit_target_pct):
+            if trail_stop > 0 and bid <= trail_stop and best_bid > entry_price:
+                reason = f"option trailing stop {trail_stop:.2f}"
+            elif bid >= entry_price * (1 + self.config.option_profit_target_pct):
                 reason = "option profit target"
             elif bid <= entry_price * (1 - self.config.option_stop_loss_pct):
                 reason = "option stop loss"
