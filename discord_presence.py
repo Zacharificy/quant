@@ -72,9 +72,11 @@ async def presence_loop(client, discord_module) -> None:
 
 async def update_profit_presence(client, discord_module) -> None:
     try:
-        pnl = all_time_pnl()
-        marker = "🔵" if pnl >= 0 else "🔴"
-        label = f"{marker} All-time P/L {format_money(pnl)}"
+        snapshot = profit_snapshot()
+        daily = snapshot["daily_pnl"]
+        closed = snapshot["closed_pnl"]
+        marker = "🔵⬆️" if daily >= 0 else "🔴⬇️"
+        label = f"{marker} Day P/L {format_money(daily)} | Closed {format_money(closed)}"
         activity = discord_module.Activity(type=discord_module.ActivityType.watching, name=label[:120])
         await client.change_presence(status=discord_module.Status.online, activity=activity)
     except Exception as exc:
@@ -119,7 +121,9 @@ def build_research_plan_message() -> str:
         )
 
     lines = ["**Research plan**"]
-    lines.append(f"All-time P/L: `{format_money(all_time_pnl())}`")
+    snapshot = profit_snapshot(refresh_account=False)
+    lines.append(f"Daily P/L: `{format_money(snapshot['daily_pnl'])}`")
+    lines.append(f"Closed bot P/L: `{format_money(snapshot['closed_pnl'])}`")
     lines.append(format_research_summary(payload, max_tickers=8, include_news=True))
 
     scan = state.get("last_option_scan") if isinstance(state, dict) else {}
@@ -152,6 +156,38 @@ def read_json_env_path(env_name: str, default: str) -> dict:
 
 def all_time_pnl() -> float:
     state = read_json_env_path("BOT_STATE_PATH", "alpaca_stock_bot_state.json")
+    return closed_trade_pnl(state)
+
+
+def profit_snapshot(refresh_account: bool = True) -> dict[str, float]:
+    state = refresh_daily_risk_state() if refresh_account else {}
+    if not state:
+        state = read_json_env_path("BOT_STATE_PATH", "alpaca_stock_bot_state.json")
+    daily = state.get("daily_risk") if isinstance(state, dict) else {}
+    try:
+        daily_pnl = float((daily or {}).get("pnl", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        daily_pnl = 0.0
+    return {
+        "daily_pnl": daily_pnl,
+        "closed_pnl": closed_trade_pnl(state),
+    }
+
+
+def refresh_daily_risk_state() -> dict:
+    try:
+        from alpaca_stock_bot import AlpacaStockBot, StrategyConfig, save_state
+
+        bot = AlpacaStockBot(StrategyConfig())
+        bot.update_daily_risk_snapshot()
+        save_state(bot.state_path, bot.state)
+        return bot.state
+    except Exception as exc:
+        logging.info("Could not refresh Discord status P/L from Alpaca: %s", exc)
+        return {}
+
+
+def closed_trade_pnl(state: dict) -> float:
     trade_history = state.get("trade_history") if isinstance(state, dict) else {}
     trades = (trade_history or {}).get("closed_trades") or []
     total = 0.0
