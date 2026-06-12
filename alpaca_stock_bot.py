@@ -176,6 +176,8 @@ class StrategyConfig:
     min_news_items_with_content: int = 10
     news_impact_alerts_enabled: bool = True
     news_impact_alert_cooldown_hours: int = 6
+    news_impact_max_alerts_per_scan: int = 1
+    news_impact_max_tickers: int = 4
     news_impact_mention_user_id: str = "1270486587402358784"
     macro_news_keywords: tuple[str, ...] = (
         "war",
@@ -582,6 +584,12 @@ class AlpacaStockBot:
             ),
             "news_impact_alert_cooldown_hours": env_int(
                 "BOT_NEWS_IMPACT_ALERT_COOLDOWN_HOURS", config.news_impact_alert_cooldown_hours, 1
+            ),
+            "news_impact_max_alerts_per_scan": env_int(
+                "BOT_NEWS_IMPACT_MAX_ALERTS_PER_SCAN", config.news_impact_max_alerts_per_scan, 1
+            ),
+            "news_impact_max_tickers": env_int(
+                "BOT_NEWS_IMPACT_MAX_TICKERS", config.news_impact_max_tickers, 1
             ),
             "option_max_hold_days": env_int("BOT_OPTION_MAX_HOLD_DAYS", config.option_max_hold_days, 1),
             "min_learning_trades_per_setup": env_int(
@@ -1693,11 +1701,19 @@ class AlpacaStockBot:
             "count": len(alerts),
             "alerts": alerts[:8],
         }
-        for alert in alerts[:3]:
+        sent = 0
+        max_alerts = max(1, self.config.news_impact_max_alerts_per_scan)
+        max_tickers = max(1, self.config.news_impact_max_tickers)
+        for alert in alerts:
             if self.news_impact_recently_sent(alert):
                 continue
-            self.notifier.news_impact(alert, self.config.news_impact_mention_user_id)
-            self.mark_news_impact_sent(alert)
+            short_alert = dict(alert)
+            short_alert["tickers"] = list(alert.get("tickers", []))[:max_tickers]
+            self.notifier.news_impact(short_alert, self.config.news_impact_mention_user_id)
+            self.mark_news_impact_sent(short_alert)
+            sent += 1
+            if sent >= max_alerts:
+                break
 
     def detect_news_impact_alerts(self, news_by_symbol: dict[str, list[dict[str, str]]]) -> list[dict]:
         alerts = []

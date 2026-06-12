@@ -140,33 +140,21 @@ class DiscordNotifier:
     def news_impact(self, alert: dict, mention_user_id: str = "") -> None:
         now = datetime.now(NY_TZ).strftime("%Y-%m-%d %I:%M:%S %p ET")
         mention = f"<@{mention_user_id}> " if mention_user_id else ""
-        tickers = ", ".join(f"`{ticker}`" for ticker in alert.get("tickers", [])[:10]) or "`SPY`"
+        tickers = ", ".join(f"`{ticker}`" for ticker in alert.get("tickers", [])[:4]) or "`SPY`"
         bias = str(alert.get("bias", "watch")).upper()
         direction = str(alert.get("direction", "")).lower()
-        confidence = alert.get("confidence", "")
         direction_label = "LIKELY UP" if direction == "up" else "LIKELY DOWN" if direction == "down" else bias
         marker = _direction_marker("call" if direction == "up" or "bull" in bias.lower() else "put" if direction == "down" or "bear" in bias.lower() else "")
         headline = str(alert.get("headline", "News impact alert")).strip()
         evidence = str(alert.get("evidence", "")).strip()
-        reasoning = str(alert.get("reasoning", "")).strip()
-        gex = str(alert.get("gex", "")).strip()
-        source = str(alert.get("source", "")).strip()
-        rule = str(alert.get("rule", "")).strip()
+        news = evidence or headline
         content = (
-            f"{mention}{marker} **News Impact Alert**\n"
+            f"{mention}{marker} **Market News**\n"
             f"{now}\n"
-            f"Direction: **{direction_label}**"
-            f"{f' | Confidence: {float(confidence):.0%}' if confidence != '' else ''} | Watch: {tickers}\n"
-            f"{headline[:240]}\n"
+            f"Stock: {tickers}\n"
+            f"Direction: **{direction_label}**\n"
+            f"News: {news[:500]}"
         )
-        if evidence:
-            content += f"Read-through: {evidence[:420]}\n"
-        if reasoning:
-            content += f"Why: {reasoning[:420]}\n"
-        if gex:
-            content += f"InsiderFinance/GEX: {gex[:420]}\n"
-        if rule or source:
-            content += f"Rule: `{rule or 'news'}` | Source: {source[:160]}"
         self.send(content)
 
     @staticmethod
