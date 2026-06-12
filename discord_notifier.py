@@ -145,6 +145,7 @@ class DiscordNotifier:
         marker = _direction_marker("call" if "bull" in bias.lower() else "put" if "bear" in bias.lower() else "")
         headline = str(alert.get("headline", "News impact alert")).strip()
         evidence = str(alert.get("evidence", "")).strip()
+        gex = str(alert.get("gex", "")).strip()
         source = str(alert.get("source", "")).strip()
         rule = str(alert.get("rule", "")).strip()
         content = (
@@ -155,6 +156,8 @@ class DiscordNotifier:
         )
         if evidence:
             content += f"Read-through: {evidence[:420]}\n"
+        if gex:
+            content += f"InsiderFinance/GEX: {gex[:420]}\n"
         if rule or source:
             content += f"Rule: `{rule or 'news'}` | Source: {source[:160]}"
         self.send(content)

@@ -42,22 +42,12 @@ DEFAULT_WATCHLIST_PATH = Path("watchlist.json")
 DEFAULT_LEVELS_PATH = Path("trade_levels.json")
 OPTION_CONTRACT_MULTIPLIER = 100
 DEFAULT_EXTERNAL_MACRO_RSS_URLS = (
-    "https://feeds.marketwatch.com/marketwatch/topstories/",
-    "https://www.nasdaq.com/feed/rssoutbound?category=Markets",
-    "https://www.nasdaq.com/feed/rssoutbound?category=Options",
-    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
-    "https://news.google.com/rss/search?q=site%3Areuters.com%2Fmarkets%20OR%20site%3Areuters.com%2Fbusiness&hl=en-US&gl=US&ceid=US%3Aen",
-    "https://news.google.com/rss/search?q=(site%3Aapnews.com%20OR%20site%3Areuters.com%20OR%20site%3Acnbc.com%20OR%20site%3Amarketwatch.com)%20(Trump%20OR%20Iran%20OR%20war%20OR%20ceasefire%20OR%20strikes)%20(stocks%20OR%20market%20OR%20SPY)&hl=en-US&gl=US&ceid=US%3Aen",
+    "https://trumpstruth.org/feed",
     "https://www.federalreserve.gov/feeds/press_all.xml",
 )
 TRUSTED_EXTERNAL_NEWS_DOMAINS = (
-    "marketwatch.com",
-    "nasdaq.com",
-    "cnbc.com",
-    "reuters.com",
-    "apnews.com",
+    "trumpstruth.org",
     "federalreserve.gov",
-    "news.google.com",
 )
 DEFAULT_TICKERS = (
     "SPY",
@@ -1696,6 +1686,7 @@ class AlpacaStockBot:
     def process_news_impact_alerts(self, news_by_symbol: dict[str, list[dict[str, str]]]) -> None:
         if not self.config.news_impact_alerts_enabled:
             return
+        self.refresh_insiderfinance_gex()
         alerts = self.detect_news_impact_alerts(news_by_symbol)
         self.state["last_news_impact_alerts"] = {
             "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
@@ -1713,16 +1704,21 @@ class AlpacaStockBot:
         seen = set()
         for symbol, items in news_by_symbol.items():
             for item in items[:14]:
+                source_domain = str(item.get("source_domain") or item.get("source") or item.get("url") or "").lower()
+                truth_source = "trumpstruth.org" in source_domain or "truthsocial.com" in source_domain
                 text = self.news_item_text(item)
                 lowered = text.lower()
                 for rule in self.news_impact_rules():
+                    if rule.get("truth_only") and not truth_source:
+                        continue
                     if not all(term in lowered for term in rule["must"]):
                         continue
                     if rule.get("any") and not any(term in lowered for term in rule["any"]):
                         continue
                     if any(term in lowered for term in rule.get("exclude", ())):
                         continue
-                    evidence = self.news_item_evidence(item, rule["must"][0], limit=220)
+                    evidence_keyword = rule["must"][0] if rule["must"] else (rule.get("any") or ("news",))[0]
+                    evidence = self.news_item_evidence(item, evidence_keyword, limit=220)
                     key = (rule["name"], evidence[:120])
                     if key in seen:
                         continue
@@ -1734,18 +1730,41 @@ class AlpacaStockBot:
                             "tickers": rule["tickers"],
                             "headline": str(item.get("headline") or evidence or "News impact alert"),
                             "evidence": evidence,
+                            "gex": self.news_impact_gex_summary(rule["tickers"]),
                             "source": str(item.get("source_domain") or item.get("source") or item.get("url") or ""),
                             "detected_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
                         }
                     )
         return alerts
 
+    def news_impact_gex_summary(self, tickers: list[str]) -> str:
+        parts = []
+        for ticker in tickers:
+            if ticker not in {"SPY", "QQQ", "IWM", "DIA"}:
+                continue
+            gex = (self.state.get("insiderfinance_gex") or {}).get(ticker) or {}
+            if gex.get("status") != "ok":
+                continue
+            pieces = []
+            if gex.get("regime"):
+                pieces.append(str(gex.get("regime")))
+            if gex.get("put_wall"):
+                pieces.append(f"put wall {gex.get('put_wall')}")
+            if gex.get("zero_gamma"):
+                pieces.append(f"zero gamma {gex.get('zero_gamma')}")
+            if gex.get("call_wall"):
+                pieces.append(f"call wall {gex.get('call_wall')}")
+            if pieces:
+                parts.append(f"{ticker}: " + ", ".join(pieces))
+        return " | ".join(parts[:4])
+
     @staticmethod
     def news_impact_rules() -> list[dict]:
         return [
             {
                 "name": "trump_iran_deescalation",
-                "must": ("trump", "iran"),
+                "truth_only": True,
+                "must": ("iran",),
                 "any": ("called off", "calls off", "cancel", "backed away", "ceasefire", "talks", "deal", "de-escalat"),
                 "exclude": ("attack launched", "strikes begin", "missile strike"),
                 "bias": "bullish risk-on",
@@ -1753,7 +1772,8 @@ class AlpacaStockBot:
             },
             {
                 "name": "trump_iran_escalation",
-                "must": ("trump", "iran"),
+                "truth_only": True,
+                "must": ("iran",),
                 "any": ("strike", "attack", "missile", "war", "airstrike", "retaliation"),
                 "exclude": ("called off", "calls off", "cancel", "ceasefire", "deal"),
                 "bias": "bearish risk-off",
@@ -1761,7 +1781,8 @@ class AlpacaStockBot:
             },
             {
                 "name": "trump_tariff_pressure",
-                "must": ("trump", "tariff"),
+                "truth_only": True,
+                "must": ("tariff",),
                 "any": ("increase", "new tariff", "levy", "threat", "china", "imports"),
                 "exclude": ("delay", "pause", "exempt", "deal"),
                 "bias": "bearish trade-sensitive",
@@ -1769,7 +1790,8 @@ class AlpacaStockBot:
             },
             {
                 "name": "trump_tariff_relief",
-                "must": ("trump", "tariff"),
+                "truth_only": True,
+                "must": ("tariff",),
                 "any": ("delay", "pause", "exempt", "deal", "agreement", "rollback"),
                 "exclude": (),
                 "bias": "bullish trade relief",
@@ -1777,7 +1799,8 @@ class AlpacaStockBot:
             },
             {
                 "name": "ai_chip_policy",
-                "must": ("trump",),
+                "truth_only": True,
+                "must": (),
                 "any": ("ai", "chip", "semiconductor", "nvidia", "export controls", "data center"),
                 "exclude": (),
                 "bias": "watch tech/semis",
@@ -1785,7 +1808,8 @@ class AlpacaStockBot:
             },
             {
                 "name": "tesla_musk_policy",
-                "must": ("trump",),
+                "truth_only": True,
+                "must": (),
                 "any": ("tesla", "musk", "ev credit", "electric vehicle", "spacex"),
                 "exclude": (),
                 "bias": "watch TSLA",
