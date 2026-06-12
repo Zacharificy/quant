@@ -1706,36 +1706,153 @@ class AlpacaStockBot:
             for item in items[:14]:
                 source_domain = str(item.get("source_domain") or item.get("source") or item.get("url") or "").lower()
                 truth_source = "trumpstruth.org" in source_domain or "truthsocial.com" in source_domain
+                if not truth_source:
+                    continue
                 text = self.news_item_text(item)
-                lowered = text.lower()
-                for rule in self.news_impact_rules():
-                    if rule.get("truth_only") and not truth_source:
-                        continue
-                    if not all(term in lowered for term in rule["must"]):
-                        continue
-                    if rule.get("any") and not any(term in lowered for term in rule["any"]):
-                        continue
-                    if any(term in lowered for term in rule.get("exclude", ())):
-                        continue
-                    evidence_keyword = rule["must"][0] if rule["must"] else (rule.get("any") or ("news",))[0]
-                    evidence = self.news_item_evidence(item, evidence_keyword, limit=220)
-                    key = (rule["name"], evidence[:120])
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    alerts.append(
-                        {
-                            "rule": rule["name"],
-                            "bias": rule["bias"],
-                            "tickers": rule["tickers"],
-                            "headline": str(item.get("headline") or evidence or "News impact alert"),
-                            "evidence": evidence,
-                            "gex": self.news_impact_gex_summary(rule["tickers"]),
-                            "source": str(item.get("source_domain") or item.get("source") or item.get("url") or ""),
-                            "detected_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
-                        }
-                    )
+                analysis = self.analyze_truth_social_market_impact(text)
+                if not analysis:
+                    continue
+                evidence = self.best_impact_evidence(item, analysis)
+                key = (analysis["event"], evidence[:120])
+                if key in seen:
+                    continue
+                seen.add(key)
+                tickers = analysis["tickers"]
+                alerts.append(
+                    {
+                        "rule": analysis["event"],
+                        "bias": analysis["bias"],
+                        "direction": analysis["direction"],
+                        "confidence": analysis["confidence"],
+                        "tickers": tickers,
+                        "headline": str(item.get("headline") or evidence or "Truth Social market impact"),
+                        "evidence": evidence,
+                        "reasoning": analysis["reasoning"],
+                        "gex": self.news_impact_gex_summary(tickers),
+                        "source": str(item.get("source_domain") or item.get("source") or item.get("url") or ""),
+                        "detected_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+                    }
+                )
         return alerts
+
+    def analyze_truth_social_market_impact(self, text: str) -> dict | None:
+        """Read a Truth Social post and infer likely near-term market impact.
+
+        This is not a price oracle. It is a transparent event classifier that uses
+        full post/body text, direction scores, and confidence gates before alerting.
+        """
+        clean = re.sub(r"\s+", " ", str(text or "")).strip()
+        if len(clean) < 12:
+            return None
+        lowered = clean.lower()
+        event_scores = self.truth_event_scores(lowered)
+        if not event_scores:
+            return None
+        event, event_score = max(event_scores.items(), key=lambda item: item[1])
+        profile = self.truth_event_profile(event)
+        bullish_score = self.phrase_score(lowered, profile["bullish"])
+        bearish_score = self.phrase_score(lowered, profile["bearish"])
+        modifier_score = self.phrase_score(lowered, profile.get("modifiers", ()))
+        net = bullish_score - bearish_score
+        if abs(net) < 1.0:
+            return None
+        direction = "up" if net > 0 else "down"
+        confidence = min(0.95, 0.45 + (min(abs(net), 5.0) * 0.08) + min(event_score, 3.0) * 0.04 + modifier_score * 0.02)
+        if confidence < 0.58:
+            return None
+        tickers = profile["up_tickers"] if direction == "up" else profile["down_tickers"]
+        bias = f"likely {direction}"
+        reasoning = self.impact_reasoning(event, direction, bullish_score, bearish_score, confidence)
+        return {
+            "event": event,
+            "direction": direction,
+            "bias": bias,
+            "confidence": round(confidence, 2),
+            "tickers": tickers,
+            "reasoning": reasoning,
+        }
+
+    @staticmethod
+    def phrase_score(text: str, phrases: tuple[str, ...]) -> float:
+        score = 0.0
+        for phrase in phrases:
+            if phrase in text:
+                score += 1.5 if " " in phrase else 1.0
+        return score
+
+    def truth_event_scores(self, text: str) -> dict[str, float]:
+        profiles = {
+            name: self.truth_event_profile(name)
+            for name in ("iran_geopolitics", "tariffs_trade", "ai_chips", "tesla_musk", "fed_rates")
+        }
+        scores = {}
+        for name, profile in profiles.items():
+            score = self.phrase_score(text, profile["event_terms"])
+            if score > 0:
+                scores[name] = score
+        return scores
+
+    @staticmethod
+    def truth_event_profile(event: str) -> dict:
+        profiles = {
+            "iran_geopolitics": {
+                "event_terms": ("iran", "israel", "missile", "strike", "war", "ceasefire", "hormuz", "oil"),
+                "bullish": ("called off", "calls off", "cancel", "backed away", "stand down", "ceasefire", "peace", "deal", "talks", "de-escalat", "no attack", "will not attack"),
+                "bearish": ("attack", "strike", "airstrike", "missile", "retaliation", "war", "bomb", "hormuz closed", "sanction"),
+                "modifiers": ("market", "stocks", "oil", "energy", "futures", "nasdaq", "s&p"),
+                "up_tickers": ["SPY", "QQQ", "TSLA", "NVDA", "AMD", "MSFT", "AAPL"],
+                "down_tickers": ["SPY", "QQQ", "TSLA", "IWM"],
+            },
+            "tariffs_trade": {
+                "event_terms": ("tariff", "trade", "china", "imports", "exports", "deal"),
+                "bullish": ("delay", "pause", "exempt", "rollback", "deal", "agreement", "lower tariffs", "no tariffs"),
+                "bearish": ("new tariff", "increase", "raise tariffs", "levy", "threat", "retaliatory tariff", "trade war"),
+                "modifiers": ("autos", "chips", "china", "imports", "consumer", "retail"),
+                "up_tickers": ["SPY", "QQQ", "TSLA", "AAPL", "NVDA", "AMD", "F"],
+                "down_tickers": ["SPY", "QQQ", "TSLA", "AAPL", "NVDA", "AMD", "F"],
+            },
+            "ai_chips": {
+                "event_terms": ("ai", "chip", "chips", "semiconductor", "nvidia", "export controls", "data center"),
+                "bullish": ("approve", "approval", "fast track", "investment", "build", "deal", "partnership", "less regulation", "remove barriers"),
+                "bearish": ("ban", "restrict", "export controls", "block", "investigation", "antitrust", "halt"),
+                "modifiers": ("nvidia", "amd", "semiconductor", "data center", "ai"),
+                "up_tickers": ["QQQ", "NVDA", "AMD", "AVGO", "MSFT", "AAPL", "SPY"],
+                "down_tickers": ["QQQ", "NVDA", "AMD", "AVGO", "MSFT", "AAPL", "SPY"],
+            },
+            "tesla_musk": {
+                "event_terms": ("tesla", "musk", "ev", "electric vehicle", "spacex", "robotaxi"),
+                "bullish": ("support", "approve", "contract", "deal", "credit", "subsidy", "launch", "partnership"),
+                "bearish": ("remove credit", "end credit", "investigation", "lawsuit", "ban", "cut subsidy", "contract cancelled"),
+                "modifiers": ("tesla", "musk", "spacex", "ev", "robotaxi"),
+                "up_tickers": ["TSLA", "QQQ", "SPY"],
+                "down_tickers": ["TSLA", "QQQ", "SPY"],
+            },
+            "fed_rates": {
+                "event_terms": ("fed", "powell", "rates", "inflation", "cpi", "jobs"),
+                "bullish": ("cut rates", "rate cut", "lower rates", "dovish", "inflation cooling", "soft landing"),
+                "bearish": ("higher rates", "raise rates", "hot inflation", "hawkish", "no cuts", "sticky inflation"),
+                "modifiers": ("stocks", "market", "nasdaq", "s&p", "futures"),
+                "up_tickers": ["SPY", "QQQ", "IWM", "TSLA", "NVDA"],
+                "down_tickers": ["SPY", "QQQ", "IWM", "TSLA", "NVDA"],
+            },
+        }
+        return profiles[event]
+
+    @staticmethod
+    def impact_reasoning(event: str, direction: str, bullish_score: float, bearish_score: float, confidence: float) -> str:
+        event_name = event.replace("_", " ")
+        return (
+            f"{event_name}: full post scored {bullish_score:.1f} bullish vs {bearish_score:.1f} bearish, "
+            f"so affected tickers are marked likely {direction} with {confidence:.0%} confidence."
+        )
+
+    def best_impact_evidence(self, item: dict[str, str], analysis: dict) -> str:
+        text = self.news_item_text(item)
+        event_terms = self.truth_event_profile(analysis["event"])["event_terms"]
+        for term in event_terms:
+            if self.news_keyword_match(text, term):
+                return self.news_item_evidence(item, term, limit=260)
+        return self.news_item_evidence(item, "news", limit=260)
 
     def news_impact_gex_summary(self, tickers: list[str]) -> str:
         parts = []
