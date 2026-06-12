@@ -144,11 +144,13 @@ Before opening a new position, the bot now checks:
 - large ticker gaps
 - unusually high ATR versus price
 - recent Alpaca news headlines for risky keywords
-- reputable external macro RSS feeds with content/title checks
+- reputable external macro RSS feeds with body/title checks, including TruthSocial, Federal Reserve, CNN Business/top/politics, and MarketWatch/Dow Jones feeds by default
 - InsiderFinance GEX levels where available
 - buying power and whole-share affordability
 
 The risky-news gate is intentionally a filter, not a buy/sell signal. It blocks new entries on hard catalyst terms such as SEC investigations, subpoenas, restatements, FDA rejections, going-concern warnings, delisting notices, merger agreement risk, cancelled contracts, lawsuits, offerings, and dilution.
+
+Market-news Discord pings are also filtered. The bot reads the headline plus RSS summary/article body when available, then only pings when a trusted source contains a real market-moving event, market context, and a directional phrase. Examples include Trump/Iran escalation or de-escalation, tariffs, Fed/rate surprises, AI/chip policy, and Tesla/EV policy. The alert names the affected ticker group and whether the news is likely up or likely down.
 
 For options, the bot only uses long premium:
 

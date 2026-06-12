@@ -44,10 +44,20 @@ OPTION_CONTRACT_MULTIPLIER = 100
 DEFAULT_EXTERNAL_MACRO_RSS_URLS = (
     "https://trumpstruth.org/feed",
     "https://www.federalreserve.gov/feeds/press_all.xml",
+    "http://rss.cnn.com/rss/money_topstories.rss",
+    "http://rss.cnn.com/rss/cnn_topstories.rss",
+    "http://rss.cnn.com/rss/cnn_allpolitics.rss",
+    "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+    "https://feeds.content.dowjones.io/public/rss/mw_marketpulse",
 )
 TRUSTED_EXTERNAL_NEWS_DOMAINS = (
     "trumpstruth.org",
     "federalreserve.gov",
+    "rss.cnn.com",
+    "cnn.com",
+    "feeds.content.dowjones.io",
+    "dowjones.io",
+    "marketwatch.com",
 )
 DEFAULT_TICKERS = (
     "SPY",
@@ -1904,11 +1914,17 @@ class AlpacaStockBot:
         for symbol, items in news_by_symbol.items():
             for item in items[:14]:
                 source_domain = str(item.get("source_domain") or item.get("source") or item.get("url") or "").lower()
-                truth_source = "trumpstruth.org" in source_domain or "truthsocial.com" in source_domain
-                if not truth_source:
+                source_type = str(item.get("source_type") or "").lower()
+                trusted_macro_source = (
+                    source_type == "external_macro"
+                    or "trumpstruth.org" in source_domain
+                    or "truthsocial.com" in source_domain
+                    or any(domain in source_domain for domain in TRUSTED_EXTERNAL_NEWS_DOMAINS)
+                )
+                if not trusted_macro_source:
                     continue
                 text = self.news_item_text(item)
-                analysis = self.analyze_truth_social_market_impact(text)
+                analysis = self.analyze_market_news_impact(text)
                 if not analysis:
                     continue
                 evidence = self.best_impact_evidence(item, analysis)
@@ -1934,11 +1950,11 @@ class AlpacaStockBot:
                 )
         return alerts
 
-    def analyze_truth_social_market_impact(self, text: str) -> dict | None:
-        """Read a Truth Social post and infer likely near-term market impact.
+    def analyze_market_news_impact(self, text: str) -> dict | None:
+        """Read trusted macro/news body text and infer likely near-term market impact.
 
         This is not a price oracle. It is a transparent event classifier that uses
-        full post/body text, direction scores, and confidence gates before alerting.
+        full headline/body text, direction scores, and confidence gates before alerting.
         """
         clean = re.sub(r"\s+", " ", str(text or "")).strip()
         if len(clean) < 12:
@@ -1972,6 +1988,9 @@ class AlpacaStockBot:
             "tickers": tickers,
             "reasoning": reasoning,
         }
+
+    def analyze_truth_social_market_impact(self, text: str) -> dict | None:
+        return self.analyze_market_news_impact(text)
 
     @staticmethod
     def is_alert_worthy_market_news(text: str, profile: dict) -> bool:
@@ -2108,7 +2127,7 @@ class AlpacaStockBot:
     def impact_reasoning(event: str, direction: str, bullish_score: float, bearish_score: float, confidence: float) -> str:
         event_name = event.replace("_", " ")
         return (
-            f"{event_name}: full post scored {bullish_score:.1f} bullish vs {bearish_score:.1f} bearish, "
+            f"{event_name}: full news text scored {bullish_score:.1f} bullish vs {bearish_score:.1f} bearish, "
             f"so affected tickers are marked likely {direction} with {confidence:.0%} confidence."
         )
 
@@ -2274,7 +2293,7 @@ class AlpacaStockBot:
     def fetch_external_macro_news(self) -> list[dict[str, str]]:
         if not self.config.use_external_macro_news:
             return []
-        items = []
+        items_by_source = []
         source_stats = {}
         article_fetches = 0
         max_article_fetches = 6
@@ -2295,6 +2314,7 @@ class AlpacaStockBot:
                 source_stats[url] = {"status": "unavailable", "items": 0, "error": str(exc)[:160]}
                 continue
             parsed_count = 0
+            source_items = []
             for node in root.findall(".//item")[:20]:
                 item = self.parse_rss_item(node, url)
                 if item:
@@ -2302,9 +2322,12 @@ class AlpacaStockBot:
                         item["content"] = self.fetch_article_excerpt(item.get("url", ""))
                         article_fetches += 1
                     item["has_body"] = bool(item.get("summary") or item.get("content"))
-                    items.append(item)
+                    source_items.append(item)
                     parsed_count += 1
+            if source_items:
+                items_by_source.append(source_items)
             source_stats[url] = {"status": "ok" if parsed_count else "empty", "items": parsed_count}
+        items = self.interleave_news_sources(items_by_source)
         self.state["external_macro_news"] = {
             "status": "ok" if items else "empty",
             "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
@@ -2314,7 +2337,17 @@ class AlpacaStockBot:
             "trusted_domains": list(TRUSTED_EXTERNAL_NEWS_DOMAINS),
             "article_fetches": article_fetches,
         }
-        return items[:40]
+        return items[:80]
+
+    @staticmethod
+    def interleave_news_sources(sources: list[list[dict[str, str]]]) -> list[dict[str, str]]:
+        items = []
+        max_len = max((len(source) for source in sources), default=0)
+        for index in range(max_len):
+            for source in sources:
+                if index < len(source):
+                    items.append(source[index])
+        return items
 
     @staticmethod
     def parse_rss_item(node: ET.Element, feed_url: str) -> dict[str, str] | None:
