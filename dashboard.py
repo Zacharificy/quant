@@ -1166,7 +1166,7 @@ def position_exit_plan(
         contract_detail = f"{underlying} {direction} strike ${strike:.2f}. "
     if underlying_target:
         contract_detail += f"Underlying guide ${float(underlying_target):.2f}. "
-    rr = risk_reward_label(profit_trigger - entry, entry - stop_trigger)
+    rr = risk_reward_label(saved_profit_trigger - entry, entry - saved_stop_trigger)
     if current >= saved_profit_trigger:
         status = "Profit target reached."
     elif current <= saved_stop_trigger:
@@ -1174,8 +1174,9 @@ def position_exit_plan(
     else:
         status = "Holding."
     return (
-        f"{status} {contract_detail}Auto sells at option >=${saved_profit_trigger:.2f}, <=${saved_stop_trigger:.2f}, "
-        f"or after {CONFIG.option_max_hold_days} days. {rr}. Now ${current:.2f}.{held_order}"
+        f"{status} {contract_detail}TP ${saved_profit_trigger:.2f} (+{CONFIG.option_profit_target_pct:.0%}) | "
+        f"Stop ${saved_stop_trigger:.2f} (-{CONFIG.option_stop_loss_pct:.0%}). "
+        f"Time stop after {CONFIG.option_max_hold_days} days. {rr}. Now ${current:.2f}.{held_order}"
     )
 
 
@@ -1186,6 +1187,7 @@ def build_snapshot() -> dict:
     bot.update_daily_risk_snapshot()
     bot.reconcile_open_orders(block_new_entries=False)
     bot.get_option_positions()
+    bot.refresh_option_exit_targets()
     save_state(bot.state_path, bot.state)
     state = bot.state
     last_scan = state.get("last_scan") or {

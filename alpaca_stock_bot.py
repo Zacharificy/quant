@@ -151,11 +151,11 @@ class StrategyConfig:
     min_option_delta_theta_score: float = 1.10
     min_realized_vol: float = 0.12
     max_realized_vol: float = 1.50
-    option_profit_target_pct: float = 0.60
-    option_stop_loss_pct: float = 0.25
+    option_profit_target_pct: float = 0.20
+    option_stop_loss_pct: float = 0.10
     option_trailing_stop_enabled: bool = True
-    option_trail_start_r: float = 1.0
-    option_trail_step_r: float = 1.0
+    option_trail_start_r: float = 1.5
+    option_trail_step_r: float = 0.5
     index_long_only: bool = True
     use_intraday_timeframes: bool = True
     intraday_lookback_days: int = 7
@@ -676,6 +676,7 @@ class AlpacaStockBot:
         news = self.fetch_recent_news()
         positions = self.get_positions()
         self.get_option_positions()
+        self.refresh_option_exit_targets()
         self.sync_state_with_positions(positions)
         if not self.validate_state_matches_alpaca():
             self.record_entry_decision(
@@ -1196,6 +1197,23 @@ class AlpacaStockBot:
         if str(direction).lower() == "put":
             return round_price(min(strike, underlying_price * 0.98))
         return None
+
+    def refresh_option_exit_targets(self) -> None:
+        tracked = self.state.setdefault("option_positions", {})
+        for entry in tracked.values():
+            try:
+                entry_price = float(entry.get("entry_price") or 0)
+            except (TypeError, ValueError):
+                continue
+            if entry_price <= 0:
+                continue
+            entry["take_profit_price"] = round_price(entry_price * (1 + self.config.option_profit_target_pct))
+            entry["stop_loss_price"] = round_price(entry_price * (1 - self.config.option_stop_loss_pct))
+            entry["exit_profile"] = (
+                f"tp{self.config.option_profit_target_pct:.0%}_"
+                f"sl{self.config.option_stop_loss_pct:.0%}_"
+                f"rr{self.config.option_profit_target_pct / self.config.option_stop_loss_pct:.1f}"
+            )
 
     @staticmethod
     def ticker_bucket(ticker: str) -> str:
@@ -3764,6 +3782,7 @@ class AlpacaStockBot:
     def manage_option_exits(self, today: date) -> None:
         tracked = self.state.setdefault("option_positions", {})
         positions = self.get_option_positions()
+        self.refresh_option_exit_targets()
         for symbol, position in list(positions.items()):
             entry = tracked.get(symbol)
             if not entry:
@@ -3784,9 +3803,13 @@ class AlpacaStockBot:
                 underlying_return = current_underlying_price / entry_underlying_price - 1
             best_bid = max(float(entry.get("best_bid", entry_price) or entry_price), bid)
             entry["best_bid"] = best_bid
+            profit_trigger = float(
+                entry.get("take_profit_price") or entry_price * (1 + self.config.option_profit_target_pct)
+            )
+            stop_trigger = float(entry.get("stop_loss_price") or entry_price * (1 - self.config.option_stop_loss_pct))
             trail_stop = float(entry.get("trailing_stop_price", 0.0) or 0.0)
             if self.config.option_trailing_stop_enabled and entry_price > 0 and bid > 0:
-                risk_per_contract = entry_price * self.config.option_stop_loss_pct
+                risk_per_contract = max(0.01, entry_price - stop_trigger)
                 if risk_per_contract > 0:
                     profit_r = max(0.0, (best_bid - entry_price) / risk_per_contract)
                     if profit_r >= self.config.option_trail_start_r:
@@ -3799,10 +3822,10 @@ class AlpacaStockBot:
             reason = None
             if trail_stop > 0 and bid <= trail_stop and best_bid > entry_price:
                 reason = f"option trailing stop {trail_stop:.2f}"
-            elif bid >= entry_price * (1 + self.config.option_profit_target_pct):
-                reason = "option profit target"
-            elif bid <= entry_price * (1 - self.config.option_stop_loss_pct):
-                reason = "option stop loss"
+            elif bid >= profit_trigger:
+                reason = f"option take profit {profit_trigger:.2f}"
+            elif bid <= stop_trigger:
+                reason = f"option stop loss {stop_trigger:.2f}"
             elif held_days >= self.config.option_max_hold_days:
                 reason = f"option time stop {held_days}d"
             if reason:
