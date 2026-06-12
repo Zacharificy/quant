@@ -1093,8 +1093,56 @@ class AlpacaStockBot:
                     positions[position.symbol] = position
         for symbol in list(tracked):
             if symbol not in positions and symbol not in open_order_symbols:
-                tracked.pop(symbol, None)
+                entry = tracked.pop(symbol, None)
+                if entry:
+                    self.record_missing_option_close(symbol, entry)
         return positions
+
+    def record_missing_option_close(self, symbol: str, entry: dict) -> None:
+        history = self.state.setdefault("trade_history", {})
+        recent = history.setdefault("closed_trades", [])[-50:]
+        if any(trade.get("symbol") == symbol and trade.get("reason") == "broker closed or expired" for trade in recent):
+            return
+        today = datetime.now(NY_TZ).date()
+        entry_price = float(entry.get("entry_price", 0.0) or 0.0)
+        qty = int(float(entry.get("contracts", 1) or 1))
+        quote = self.get_option_quote(symbol)
+        bid = quote[0] if quote else 0.0
+        parsed = parse_occ_option_symbol(symbol)
+        expiry = parsed.get("expiry") if parsed else None
+        if bid <= 0 and isinstance(expiry, date) and expiry > today:
+            bid = entry_price
+        entry_date_raw = entry.get("entry_date") or today.isoformat()
+        try:
+            entry_date = datetime.fromisoformat(str(entry_date_raw)).date()
+        except ValueError:
+            entry_date = today
+        pnl = (bid - entry_price) * OPTION_CONTRACT_MULTIPLIER * qty
+        self.record_trade(
+            {
+                "asset_type": "option",
+                "ticker": entry.get("underlying") or (parsed or {}).get("underlying") or symbol,
+                "direction": entry.get("direction") or (parsed or {}).get("direction") or "unknown",
+                "symbol": symbol,
+                "entry_date": entry_date.isoformat(),
+                "exit_date": today.isoformat(),
+                "entry_price": entry_price,
+                "exit_price": bid,
+                "contracts": qty,
+                "contract_multiplier": OPTION_CONTRACT_MULTIPLIER,
+                "pnl": pnl,
+                "return_pct": pnl / (entry_price * OPTION_CONTRACT_MULTIPLIER * qty) if entry_price > 0 and qty > 0 else 0,
+                "held_days": (today - entry_date).days,
+                "strike": entry.get("strike") or ((parsed or {}).get("strike")),
+                "dte_at_entry": entry.get("dte_at_entry"),
+                "take_profit_price": entry.get("take_profit_price"),
+                "stop_loss_price": entry.get("stop_loss_price"),
+                "underlying_target_price": entry.get("underlying_target_price"),
+                "setup_features": entry.get("setup_features", {}),
+                "reason": "broker closed or expired",
+                "exit_order_id": entry.get("exit_order_id", "not found"),
+            }
+        )
 
     def adopt_option_position(self, position, parsed: dict) -> dict | None:
         try:
@@ -1636,7 +1684,9 @@ class AlpacaStockBot:
         tracked = self.state.setdefault("positions", {})
         for ticker in list(tracked):
             if ticker not in positions:
-                tracked.pop(ticker, None)
+                entry = tracked.pop(ticker, None)
+                if entry:
+                    self.record_missing_stock_close(ticker, entry)
 
         for ticker, position in positions.items():
             if ticker not in tracked:
@@ -1644,6 +1694,39 @@ class AlpacaStockBot:
                     "entry_price": float(position.avg_entry_price),
                     "entry_date": datetime.now(NY_TZ).date().isoformat(),
                 }
+
+    def record_missing_stock_close(self, ticker: str, entry: dict) -> None:
+        history = self.state.setdefault("trade_history", {})
+        recent = history.setdefault("closed_trades", [])[-50:]
+        if any(trade.get("ticker") == ticker and trade.get("reason") == "broker closed" for trade in recent):
+            return
+        today = datetime.now(NY_TZ).date()
+        entry_price = float(entry.get("entry_price", 0.0) or 0.0)
+        qty = int(float(entry.get("qty", 1) or 1))
+        exit_price = self.latest_underlying_close(ticker) or entry_price
+        entry_date_raw = entry.get("entry_date") or today.isoformat()
+        try:
+            entry_date = datetime.fromisoformat(str(entry_date_raw)).date()
+        except ValueError:
+            entry_date = today
+        pnl = (exit_price - entry_price) * qty
+        self.record_trade(
+            {
+                "asset_type": "stock",
+                "ticker": ticker,
+                "direction": "long",
+                "entry_date": entry_date.isoformat(),
+                "exit_date": today.isoformat(),
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "qty": qty,
+                "pnl": pnl,
+                "return_pct": pnl / (entry_price * qty) if entry_price > 0 and qty > 0 else 0,
+                "setup_features": entry.get("setup_features", {}),
+                "reason": "broker closed",
+                "exit_order_id": entry.get("exit_order_id", "not found"),
+            }
+        )
 
     def manage_exits(self, today, bars: dict[str, pd.DataFrame], positions: dict[str, object]) -> None:
         tracked = self.state.setdefault("positions", {})
