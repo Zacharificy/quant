@@ -57,6 +57,32 @@ class DiscordNotifier:
         except Exception as exc:
             logging.warning("Discord notification failed: %s", exc)
 
+    def send_chunks(self, content: str, limit: int = 1850) -> None:
+        text = str(content or "").strip()
+        if not text:
+            return
+        if len(text) <= limit:
+            self.send(text)
+            return
+        chunks = []
+        remaining = text
+        while remaining:
+            if len(remaining) <= limit:
+                chunks.append(remaining)
+                break
+            split_at = remaining.rfind("\n", 0, limit)
+            if split_at < limit // 2:
+                split_at = remaining.rfind(". ", 0, limit)
+                if split_at >= limit // 2:
+                    split_at += 1
+            if split_at < limit // 2:
+                split_at = limit
+            chunks.append(remaining[:split_at].strip())
+            remaining = remaining[split_at:].strip()
+        for index, chunk in enumerate(chunks[:3], start=1):
+            suffix = f"\n({index}/{len(chunks[:3])})" if len(chunks) > 1 else ""
+            self.send(chunk + suffix)
+
     def trade_entry(self, trade: dict) -> None:
         asset_type = str(trade.get("asset_type", "")).upper() or "TRADE"
         ticker = _clean_symbol(trade.get("ticker") or trade.get("symbol") or "UNKNOWN")
@@ -163,9 +189,9 @@ class DiscordNotifier:
             f"{now}\n"
             f"Stock: {tickers}\n"
             f"Direction: **{direction_label}**\n"
-            f"News: {news[:500]}"
+            f"News: {news}"
         )
-        self.send(content)
+        self.send_chunks(content)
 
     @staticmethod
     def _post_json(url: str, payload: dict, token: str = "") -> None:
