@@ -47,6 +47,7 @@ DEFAULT_EXTERNAL_MACRO_RSS_URLS = (
     "https://www.nasdaq.com/feed/rssoutbound?category=Options",
     "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
     "https://news.google.com/rss/search?q=site%3Areuters.com%2Fmarkets%20OR%20site%3Areuters.com%2Fbusiness&hl=en-US&gl=US&ceid=US%3Aen",
+    "https://news.google.com/rss/search?q=(site%3Aapnews.com%20OR%20site%3Areuters.com%20OR%20site%3Acnbc.com%20OR%20site%3Amarketwatch.com)%20(Trump%20OR%20Iran%20OR%20war%20OR%20ceasefire%20OR%20strikes)%20(stocks%20OR%20market%20OR%20SPY)&hl=en-US&gl=US&ceid=US%3Aen",
     "https://www.federalreserve.gov/feeds/press_all.xml",
 )
 TRUSTED_EXTERNAL_NEWS_DOMAINS = (
@@ -54,6 +55,7 @@ TRUSTED_EXTERNAL_NEWS_DOMAINS = (
     "nasdaq.com",
     "cnbc.com",
     "reuters.com",
+    "apnews.com",
     "federalreserve.gov",
     "news.google.com",
 )
@@ -119,9 +121,9 @@ class StrategyConfig:
     target_stock_risk_cash: float = 35.0
     trade_stocks: bool = True
     max_candidate_count: int = 8
-    min_cross_sectional_score: float = 0.48
+    min_cross_sectional_score: float = 0.35
     min_cash_buffer: float = 25.0
-    min_activity_option_score: float = 0.46
+    min_activity_option_score: float = 0.38
     breakout_lookback_days: int = 5
     cooldown_days: int = 7
     stop_atr_multiple: float = 2.0
@@ -142,7 +144,7 @@ class StrategyConfig:
     trade_options: bool = True
     option_position_pct: float = 0.35
     max_option_premium_cash: float = 650.0
-    min_option_score: float = 0.58
+    min_option_score: float = 0.50
     max_option_positions: int = 3
     max_option_contracts_per_trade: int = 1
     max_option_contracts_per_underlying: int = 1
@@ -155,8 +157,8 @@ class StrategyConfig:
     max_option_model_premium_ratio: float = 1.75
     min_option_abs_delta: float = 0.22
     max_option_abs_delta: float = 0.72
-    max_option_theta_decay_pct: float = 0.18
-    min_option_delta_theta_score: float = 1.75
+    max_option_theta_decay_pct: float = 0.30
+    min_option_delta_theta_score: float = 1.10
     min_realized_vol: float = 0.12
     max_realized_vol: float = 1.50
     option_profit_target_pct: float = 0.60
@@ -168,6 +170,7 @@ class StrategyConfig:
     min_risk_learning_trades: int = 6
     allow_stock_after_option: bool = True
     block_on_macro_news: bool = True
+    macro_relief_score_boost: float = 0.12
     use_external_macro_news: bool = True
     use_insiderfinance_gex: bool = True
     insiderfinance_gex_cache_minutes: int = 20
@@ -579,6 +582,9 @@ class AlpacaStockBot:
             "max_atr_pct": env_float("BOT_MAX_ATR_PCT", config.max_atr_pct, 0.0),
             "block_on_risky_news": env_bool("BOT_BLOCK_ON_RISKY_NEWS", config.block_on_risky_news),
             "block_on_macro_news": env_bool("BOT_BLOCK_ON_MACRO_NEWS", config.block_on_macro_news),
+            "macro_relief_score_boost": env_float(
+                "BOT_MACRO_RELIEF_SCORE_BOOST", config.macro_relief_score_boost, 0.0
+            ),
         }
         if overrides["max_option_dte"] < overrides["min_option_dte"]:
             overrides["max_option_dte"] = overrides["min_option_dte"]
@@ -1761,6 +1767,7 @@ class AlpacaStockBot:
             reasons.extend(score_reasons)
             reasons.extend(self.ticker_risk_reasons(ticker, df, news.get(ticker, [])))
             if not reasons:
+                score = self.apply_macro_relief_score(ticker, "call", score)
                 score = self.apply_learning_score(score, "stock", ticker, "long")
             if score < self.config.min_score:
                 reasons.append(f"score {score:.2f} below {self.config.min_score:.2f}")
@@ -1846,7 +1853,13 @@ class AlpacaStockBot:
                 }
                 continue
             direction, score, reasons = self.score_directional_trade(ticker, df)
+            macro_relief = self.has_macro_relief() and ticker in {"SPY", "QQQ", "IWM", "DIA"}
+            if macro_relief:
+                direction = "call"
+                score = max(score if not reasons else 0.0, self.config.min_option_score + self.config.macro_relief_score_boost)
+                reasons = []
             if not reasons:
+                score = self.apply_macro_relief_score(ticker, direction, score)
                 score = self.apply_learning_score(score, "option", ticker, direction)
             ideal_score = max(self.config.min_score, self.config.min_option_score)
             activity_score = min(ideal_score, self.config.min_activity_option_score)
@@ -1896,6 +1909,7 @@ class AlpacaStockBot:
                 "reasons": (
                     ([] if score >= ideal_score else [f"below ideal {ideal_score:.2f}, allowed as best available"])
                     + [f"levels: {reason}" for reason in level_report.get("reasons", [])]
+                    + (["macro relief index call"] if macro_relief else [])
                     + research_note
                 ),
             }
@@ -2223,11 +2237,14 @@ class AlpacaStockBot:
         if not self.config.block_on_macro_news:
             self.state["macro_news"] = {"status": "disabled", "reasons": []}
             return []
+        relief_reasons = self.macro_relief_reasons(news)
         reasons = []
         seen = set()
         for ticker in ("SPY", "QQQ", "DIA", "IWM"):
             for item in news.get(ticker, [])[:10]:
                 text = self.news_item_text(item)
+                if self.is_macro_relief_text(text):
+                    continue
                 for keyword in self.config.macro_news_keywords:
                     if self.news_keyword_match(text, keyword):
                         clipped = self.news_item_evidence(item, keyword, limit=160)
@@ -2240,6 +2257,14 @@ class AlpacaStockBot:
             self.state["macro_news"] = {
                 "status": "blocked",
                 "reasons": reasons[:3],
+                "relief_reasons": relief_reasons[:3],
+                "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+            }
+        elif relief_reasons:
+            self.state["macro_news"] = {
+                "status": "relief",
+                "reasons": relief_reasons[:3],
+                "score_boost": self.config.macro_relief_score_boost,
                 "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
             }
         else:
@@ -2249,6 +2274,66 @@ class AlpacaStockBot:
                 "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
             }
         return reasons[:3]
+
+    def apply_macro_relief_score(self, ticker: str, direction: str | None, score: float) -> float:
+        if ticker not in {"SPY", "QQQ", "DIA", "IWM"} or direction != "call":
+            return score
+        if not self.has_macro_relief():
+            return score
+        return max(0.0, min(1.0, score + self.config.macro_relief_score_boost))
+
+    def has_macro_relief(self) -> bool:
+        macro = self.state.get("macro_news") or {}
+        return macro.get("status") == "relief"
+
+    def macro_relief_reasons(self, news: dict[str, list[dict[str, str]]]) -> list[str]:
+        reasons = []
+        seen = set()
+        for ticker in ("SPY", "QQQ", "DIA", "IWM"):
+            for item in news.get(ticker, [])[:12]:
+                text = self.news_item_text(item)
+                if not self.is_macro_relief_text(text):
+                    continue
+                clipped = self.news_item_evidence(item, "relief", limit=160)
+                if clipped not in seen:
+                    reasons.append(f"macro relief: {clipped}")
+                    seen.add(clipped)
+        return reasons[:3]
+
+    @staticmethod
+    def is_macro_relief_text(text: str) -> bool:
+        text = str(text or "").lower()
+        risk_terms = (
+            "iran",
+            "war",
+            "strike",
+            "strikes",
+            "airstrike",
+            "attack",
+            "attacks",
+            "ceasefire",
+            "hormuz",
+            "missile",
+        )
+        relief_terms = (
+            "called off",
+            "calls off",
+            "cancel",
+            "cancels",
+            "canceled",
+            "cancelled",
+            "backed away",
+            "backs away",
+            "peace",
+            "agreement",
+            "deal",
+            "talks",
+            "negotiations",
+            "ceasefire",
+            "de-escalat",
+            "will end",
+        )
+        return any(term in text for term in risk_terms) and any(term in text for term in relief_terms)
 
     @staticmethod
     def news_item_text(item: dict[str, str]) -> str:
