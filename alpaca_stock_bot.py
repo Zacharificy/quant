@@ -1766,6 +1766,8 @@ class AlpacaStockBot:
             return None
         event, event_score = max(event_scores.items(), key=lambda item: item[1])
         profile = self.truth_event_profile(event)
+        if not self.is_alert_worthy_market_news(clean, profile):
+            return None
         bullish_score = self.phrase_score(lowered, profile["bullish"])
         bearish_score = self.phrase_score(lowered, profile["bearish"])
         modifier_score = self.phrase_score(lowered, profile.get("modifiers", ()))
@@ -1787,6 +1789,71 @@ class AlpacaStockBot:
             "tickers": tickers,
             "reasoning": reasoning,
         }
+
+    @staticmethod
+    def is_alert_worthy_market_news(text: str, profile: dict) -> bool:
+        lowered = str(text or "").lower()
+        if len(lowered) < 40:
+            return False
+        fluff_terms = (
+            "scott pelley",
+            "60 minutes",
+            "ratings",
+            "fake news",
+            "mainstream media",
+            "journalist",
+            "interview",
+            "book",
+            "subscribe",
+            "endorsement",
+            "poll",
+            "campaign rally",
+        )
+        hard_market_terms = (
+            "stock",
+            "stocks",
+            "market",
+            "markets",
+            "s&p",
+            "spy",
+            "nasdaq",
+            "qqq",
+            "futures",
+            "oil",
+            "energy",
+            "dollar",
+            "treasury",
+            "rates",
+            "inflation",
+            "cpi",
+            "fed",
+            "tariff",
+            "tariffs",
+            "china",
+            "iran",
+            "israel",
+            "hormuz",
+            "missile",
+            "strike",
+            "airstrike",
+            "war",
+            "ceasefire",
+            "sanction",
+            "nvidia",
+            "tesla",
+            "semiconductor",
+            "chip",
+            "chips",
+            "ev credit",
+        )
+        has_hard_market_term = any(term in lowered for term in hard_market_terms)
+        if any(term in lowered for term in fluff_terms) and not has_hard_market_term:
+            return False
+        has_event = any(term in lowered for term in profile.get("event_terms", ()))
+        has_direction = any(term in lowered for term in profile.get("bullish", ())) or any(
+            term in lowered for term in profile.get("bearish", ())
+        )
+        return bool(has_event and has_direction and has_hard_market_term)
 
     @staticmethod
     def phrase_score(text: str, phrases: tuple[str, ...]) -> float:
@@ -2750,6 +2817,8 @@ class AlpacaStockBot:
                 text = self.news_item_text(item)
                 if self.is_macro_relief_text(text):
                     continue
+                if not self.is_market_moving_macro_risk_text(text):
+                    continue
                 for keyword in self.config.macro_news_keywords:
                     if self.news_keyword_match(text, keyword):
                         clipped = self.news_item_evidence(item, keyword, limit=160)
@@ -2779,6 +2848,61 @@ class AlpacaStockBot:
                 "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
             }
         return reasons[:3]
+
+    @staticmethod
+    def is_market_moving_macro_risk_text(text: str) -> bool:
+        lowered = str(text or "").lower()
+        if len(lowered) < 40:
+            return False
+        risk_events = (
+            "war",
+            "invasion",
+            "missile",
+            "airstrike",
+            "strike",
+            "attack",
+            "retaliation",
+            "nuclear",
+            "sanction",
+            "tariff",
+            "trade war",
+            "fed emergency",
+            "rate shock",
+            "hot inflation",
+            "cpi surprise",
+            "bank crisis",
+            "circuit breaker",
+            "market crash",
+            "iran",
+            "israel",
+            "hormuz",
+        )
+        market_context = (
+            "stock",
+            "stocks",
+            "market",
+            "markets",
+            "s&p",
+            "spy",
+            "nasdaq",
+            "qqq",
+            "futures",
+            "oil",
+            "energy",
+            "dollar",
+            "treasury",
+            "rates",
+            "inflation",
+            "fed",
+            "china",
+            "imports",
+            "exports",
+            "semiconductor",
+            "chip",
+            "tesla",
+            "nvidia",
+        )
+        return any(term in lowered for term in risk_events) and any(term in lowered for term in market_context)
 
     def apply_macro_relief_score(self, ticker: str, direction: str | None, score: float) -> float:
         if ticker not in {"SPY", "QQQ", "DIA", "IWM"} or direction != "call":
