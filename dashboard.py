@@ -644,7 +644,7 @@ PAGE = """
             <tbody>
               {% for p in positions %}
                 <tr>
-                  <td><strong>{{ p.symbol }}</strong><div class="subtle">{{ p.asset_type }}</div></td>
+                  <td><strong>{{ p.display_symbol }}</strong><div class="subtle">{{ p.symbol_detail or p.asset_type }}</div></td>
                   <td class="numeric">{{ p.qty_label }}</td>
                   <td class="numeric">${{ p.avg_entry_price }}</td>
                   <td class="numeric">${{ p.market_value }}</td>
@@ -932,6 +932,32 @@ def option_type_from_symbol(symbol: str) -> str | None:
     if not match:
         return None
     return "Call" if match.group(1) == "C" else "Put"
+
+
+def option_symbol_parts(symbol: str) -> dict | None:
+    match = re.match(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$", str(symbol or "").upper())
+    if not match:
+        return None
+    expiry = match.group(2)
+    return {
+        "underlying": match.group(1),
+        "expiry": f"20{expiry[:2]}-{expiry[2:4]}-{expiry[4:]}",
+        "right": "Call" if match.group(3) == "C" else "Put",
+        "strike": int(match.group(4)) / 1000,
+    }
+
+
+def display_position_symbol(symbol: str, tracked_option: dict | None = None) -> tuple[str, str]:
+    if tracked_option:
+        underlying = str(tracked_option.get("underlying") or "").upper()
+        direction = str(tracked_option.get("direction") or "").title()
+        if underlying and direction:
+            return f"{underlying} {direction}", f"Contract: {symbol}"
+    parsed = option_symbol_parts(symbol)
+    if parsed:
+        detail = f"{parsed['expiry']} ${parsed['strike']:.2f} | Contract: {symbol}"
+        return f"{parsed['underlying']} {parsed['right']}", detail
+    return str(symbol), ""
 
 
 def order_action_label(order: dict) -> str:
@@ -1248,9 +1274,12 @@ def build_snapshot() -> dict:
         tracked_stock = (state.get("positions") or {}).get(position.symbol)
         tracked_option = (state.get("option_positions") or {}).get(position.symbol)
         asset_type = asset_type_from_symbol(position.symbol)
+        display_symbol, symbol_detail = display_position_symbol(position.symbol, tracked_option)
         positions.append(
             {
                 "symbol": position.symbol,
+                "display_symbol": display_symbol,
+                "symbol_detail": symbol_detail,
                 "qty": str(position.qty),
                 "qty_label": quantity_label(position.qty, asset_type),
                 "asset_type": asset_type,

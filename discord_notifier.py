@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ class DiscordNotifier:
             channel_id=(
                 os.getenv("DISCORD_TRADE_CHANNEL_ID")
                 or os.getenv("DISCORD_CHANNEL_ID")
+                or os.getenv("DISCORD_STATUS_CHANNEL_ID")
                 or ""
             ).strip(),
         )
@@ -68,13 +70,12 @@ class DiscordNotifier:
             contracts = trade.get("contracts", "?")
             entry_price = _fmt_money(trade.get("entry_price"))
             cost = _fmt_money(trade.get("notional_cost"))
-            symbol = _clean_symbol(trade.get("symbol", ticker))
             strike = _fmt_float(trade.get("strike"), 2)
             dte = trade.get("dte_at_entry", "?")
             self.send(
-                f"{marker} **Opened Option Position**\n"
+                f"{_trade_mention()}{marker} **Opened Option Position**\n"
                 f"{now}\n"
-                f"{ticker} {direction} | `{symbol}`\n"
+                f"{ticker} {direction}\n"
                 f"Contracts: {contracts} | Entry: {entry_price} | Est. cost: {cost}\n"
                 f"Strike: {strike} | DTE: {dte} | Score: {score}\n"
                 f"Order: `{order_id}`"
@@ -84,7 +85,7 @@ class DiscordNotifier:
         qty = trade.get("qty", "?")
         entry_price = _fmt_money(trade.get("entry_price"))
         self.send(
-            f"{marker} **Opened Stock Position**\n"
+            f"{_trade_mention()}{marker} **Opened Stock Position**\n"
             f"{now}\n"
             f"{ticker} {direction}\n"
             f"Qty: {qty} | Entry: {entry_price} | Score: {score}\n"
@@ -104,12 +105,11 @@ class DiscordNotifier:
         now = datetime.now(NY_TZ).strftime("%Y-%m-%d %I:%M:%S %p ET")
 
         if asset_type == "OPTION":
-            symbol = _clean_symbol(trade.get("symbol", ticker))
             contracts = trade.get("contracts", "?")
             self.send(
-                f"{marker} **Closed Option Position**\n"
+                f"{_trade_mention()}{marker} **Closed Option Position**\n"
                 f"{now}\n"
-                f"{ticker} {direction} | `{symbol}`\n"
+                f"{ticker} {direction}\n"
                 f"Contracts: {contracts} | P/L: {pnl} ({return_pct})\n"
                 f"Held: {held_days} day(s) | Reason: {reason}\n"
                 f"Order: `{order_id}`"
@@ -118,7 +118,7 @@ class DiscordNotifier:
 
         qty = trade.get("qty", "?")
         self.send(
-            f"{marker} **Closed Stock Position**\n"
+            f"{_trade_mention()}{marker} **Closed Stock Position**\n"
             f"{now}\n"
             f"{ticker} {direction}\n"
             f"Qty: {qty} | P/L: {pnl} ({return_pct})\n"
@@ -129,10 +129,11 @@ class DiscordNotifier:
     def order_submitted(self, action: str, symbol: str, qty: int, order_id: str, reason: str) -> None:
         now = datetime.now(NY_TZ).strftime("%Y-%m-%d %I:%M:%S %p ET")
         marker = _direction_marker(action)
+        display_symbol = _display_symbol(symbol)
         self.send(
-            f"{marker} **{action} Submitted**\n"
+            f"{_trade_mention()}{marker} **{action} Submitted**\n"
             f"{now}\n"
-            f"`{_clean_symbol(symbol)}` qty/contracts: {qty}\n"
+            f"`{display_symbol}` qty/contracts: {qty}\n"
             f"Reason: {reason}\n"
             f"Order: `{order_id}`"
         )
@@ -218,3 +219,33 @@ def _direction_marker(value) -> str:
 def _clean_symbol(value) -> str:
     text = str(value or "UNKNOWN").strip().upper()
     return "".join(ch for ch in text if ch.isalnum() or ch in {".", "-", "_"})
+
+
+def _display_symbol(value) -> str:
+    text = _clean_symbol(value)
+    parsed = _parse_occ_symbol(text)
+    if not parsed:
+        return text
+    return f"{parsed['underlying']} {parsed['right']}"
+
+
+def _parse_occ_symbol(value: str) -> dict | None:
+    match = re.match(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$", _clean_symbol(value))
+    if not match:
+        return None
+    return {
+        "underlying": match.group(1),
+        "expiry": match.group(2),
+        "right": "CALL" if match.group(3) == "C" else "PUT",
+        "strike": int(match.group(4)) / 1000,
+    }
+
+
+def _trade_mention() -> str:
+    raw = (
+        os.getenv("DISCORD_TRADE_MENTION_USER_ID")
+        or os.getenv("DISCORD_MENTION_USER_ID")
+        or "1270486587402358784"
+    )
+    user_id = "".join(ch for ch in str(raw) if ch.isdigit())
+    return f"<@{user_id}> " if user_id else ""
