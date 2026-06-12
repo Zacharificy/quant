@@ -473,7 +473,17 @@ PAGE = """
       <div class="panel">
         <div class="metric-label">Daily P/L Guard</div>
         <div class="metric {{ 'bad' if daily_risk.blocked else 'ok' }}">${{ daily_risk.pnl }}</div>
-        <div class="subtle">Stops new entries at -${{ daily_risk.limit }}</div>
+        <div class="subtle">Account equity change. Stops new entries at -${{ daily_risk.limit }}</div>
+      </div>
+      <div class="panel">
+        <div class="metric-label">Open Bot P/L</div>
+        <div class="metric {{ 'bad' if open_bot_pnl_float < 0 else 'ok' }}">${{ open_bot_pnl }}</div>
+        <div class="subtle">Unrealized from visible bot positions</div>
+      </div>
+      <div class="panel">
+        <div class="metric-label">Closed Bot P/L</div>
+        <div class="metric {{ 'bad' if closed_bot_pnl_float < 0 else 'ok' }}">${{ closed_bot_pnl }}</div>
+        <div class="subtle">{{ closed_trade_count }} closed trade(s) recorded</div>
       </div>
       <div class="panel">
         <div class="metric-label">Control</div>
@@ -1282,6 +1292,13 @@ def build_snapshot() -> dict:
         open_orders.append(order)
         open_orders_by_symbol[str(order.get("symbol", ""))] = order
     closed_trades = []
+    closed_bot_pnl_float = 0.0
+    all_closed_trades = trade_history.get("closed_trades") or []
+    for trade in all_closed_trades:
+        try:
+            closed_bot_pnl_float += float(trade.get("pnl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
     for trade in reversed((trade_history.get("closed_trades") or [])[-10:]):
         trade = dict(trade)
         trade["pnl_float"] = float(trade.get("pnl", 0.0))
@@ -1294,12 +1311,15 @@ def build_snapshot() -> dict:
         )
         closed_trades.append(trade)
     positions = []
+    open_bot_pnl_float = 0.0
 
     for position in bot.trading.get_all_positions():
         tracked_stock = (state.get("positions") or {}).get(position.symbol)
         tracked_option = (state.get("option_positions") or {}).get(position.symbol)
         asset_type = asset_type_from_symbol(position.symbol)
         display_symbol, symbol_detail = display_position_symbol(position.symbol, tracked_option)
+        position_pnl = float(position.unrealized_pl)
+        open_bot_pnl_float += position_pnl
         positions.append(
             {
                 "symbol": position.symbol,
@@ -1311,7 +1331,7 @@ def build_snapshot() -> dict:
                 "avg_entry_price": money(position.avg_entry_price),
                 "market_value": money(position.market_value),
                 "unrealized_pl": money(position.unrealized_pl),
-                "unrealized_pl_float": float(position.unrealized_pl),
+                "unrealized_pl_float": position_pnl,
                 "exit_plan": position_exit_plan(
                     position.symbol,
                     position,
@@ -1345,6 +1365,11 @@ def build_snapshot() -> dict:
         "current_bot_exposure": money(bot.current_bot_exposure_cash()),
         "remaining_bot_budget": money(bot.remaining_bot_budget()),
         "paper_equity_cap": money(bot.config.paper_equity_cap),
+        "open_bot_pnl": money(open_bot_pnl_float),
+        "open_bot_pnl_float": open_bot_pnl_float,
+        "closed_bot_pnl": money(closed_bot_pnl_float),
+        "closed_bot_pnl_float": closed_bot_pnl_float,
+        "closed_trade_count": len(all_closed_trades),
         "last_scan": last_scan,
         "last_entry_decision": {
             "status": plain_enum(last_entry_raw.get("status", "not checked")),
