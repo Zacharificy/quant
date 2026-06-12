@@ -148,6 +148,8 @@ Before opening a new position, the bot now checks:
 - InsiderFinance GEX levels where available
 - buying power and whole-share affordability
 
+The risky-news gate is intentionally a filter, not a buy/sell signal. It blocks new entries on hard catalyst terms such as SEC investigations, subpoenas, restatements, FDA rejections, going-concern warnings, delisting notices, merger agreement risk, cancelled contracts, lawsuits, offerings, and dilution.
+
 For options, the bot only uses long premium:
 
 - bullish setup -> buy-to-open one call
