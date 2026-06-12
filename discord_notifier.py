@@ -72,12 +72,16 @@ class DiscordNotifier:
             cost = _fmt_money(trade.get("notional_cost"))
             strike = _fmt_float(trade.get("strike"), 2)
             dte = trade.get("dte_at_entry", "?")
+            take_profit = _fmt_money(trade.get("take_profit_price"))
+            stop_loss = _fmt_money(trade.get("stop_loss_price"))
+            underlying_target = _fmt_money(trade.get("underlying_target_price"))
             self.send(
                 f"{_trade_mention()}{marker} **Opened Option Position**\n"
                 f"{now}\n"
                 f"{ticker} {direction}\n"
                 f"Contracts: {contracts} | Entry: {entry_price} | Est. cost: {cost}\n"
                 f"Strike: {strike} | DTE: {dte} | Score: {score}\n"
+                f"Take profit: {take_profit} | Stop: {stop_loss} | Underlying guide: {underlying_target}\n"
                 f"Order: `{order_id}`"
             )
             return
@@ -106,11 +110,16 @@ class DiscordNotifier:
 
         if asset_type == "OPTION":
             contracts = trade.get("contracts", "?")
+            strike = _fmt_float(trade.get("strike"), 2)
+            take_profit = _fmt_money(trade.get("take_profit_price"))
+            stop_loss = _fmt_money(trade.get("stop_loss_price"))
+            underlying_target = _fmt_money(trade.get("underlying_target_price"))
             self.send(
                 f"{_trade_mention()}{marker} **Closed Option Position**\n"
                 f"{now}\n"
                 f"{ticker} {direction}\n"
                 f"Contracts: {contracts} | P/L: {pnl} ({return_pct})\n"
+                f"Strike: {strike} | TP was {take_profit} | Stop was {stop_loss} | Underlying guide: {underlying_target}\n"
                 f"Held: {held_days} day(s) | Reason: {reason}\n"
                 f"Order: `{order_id}`"
             )

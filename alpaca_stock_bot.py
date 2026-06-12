@@ -256,6 +256,19 @@ def normalize_ticker(ticker: str) -> str:
     return "".join(ch for ch in ticker.upper().strip() if ch.isalnum() or ch in {".", "-"})
 
 
+def parse_occ_option_symbol(symbol: str) -> dict | None:
+    match = re.match(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$", normalize_ticker(str(symbol or "")))
+    if not match:
+        return None
+    expiry = match.group(2)
+    return {
+        "underlying": match.group(1),
+        "expiry": date(2000 + int(expiry[:2]), int(expiry[2:4]), int(expiry[4:])),
+        "direction": "call" if match.group(3) == "C" else "put",
+        "strike": int(match.group(4)) / 1000,
+    }
+
+
 def env_flag(name: str, default: bool = True) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -662,6 +675,7 @@ class AlpacaStockBot:
         intraday_bars = self.fetch_intraday_bars()
         news = self.fetch_recent_news()
         positions = self.get_positions()
+        self.get_option_positions()
         self.sync_state_with_positions(positions)
         if not self.validate_state_matches_alpaca():
             self.record_entry_decision(
@@ -1070,14 +1084,70 @@ class AlpacaStockBot:
         for position in self.trading.get_all_positions():
             if position.symbol in tracked:
                 positions[position.symbol] = position
+                continue
+            parsed = parse_occ_option_symbol(position.symbol)
+            if parsed:
+                adopted = self.adopt_option_position(position, parsed)
+                if adopted:
+                    tracked[position.symbol] = adopted
+                    positions[position.symbol] = position
         for symbol in list(tracked):
             if symbol not in positions and symbol not in open_order_symbols:
                 tracked.pop(symbol, None)
         return positions
 
+    def adopt_option_position(self, position, parsed: dict) -> dict | None:
+        try:
+            entry_price = abs(float(position.avg_entry_price or position.current_price or 0))
+            qty = int(float(position.qty or 0))
+        except (TypeError, ValueError):
+            return None
+        if entry_price <= 0 or qty <= 0:
+            return None
+        today = datetime.now(NY_TZ).date()
+        expiry = parsed.get("expiry")
+        dte = max(0, (expiry - today).days) if isinstance(expiry, date) else None
+        direction = str(parsed["direction"])
+        strike = float(parsed["strike"])
+        underlying = str(parsed["underlying"])
+        underlying_price = self.latest_underlying_close(underlying) or 0.0
+        take_profit_price = round_price(entry_price * (1 + self.config.option_profit_target_pct))
+        stop_loss_price = round_price(entry_price * (1 - self.config.option_stop_loss_pct))
+        return {
+            "underlying": underlying,
+            "direction": direction,
+            "entry_price": entry_price,
+            "entry_date": today.isoformat(),
+            "score": None,
+            "setup_features": {},
+            "bucket": self.ticker_bucket(underlying),
+            "contracts": qty,
+            "contract_multiplier": OPTION_CONTRACT_MULTIPLIER,
+            "premium_per_contract": entry_price,
+            "notional_cost": entry_price * OPTION_CONTRACT_MULTIPLIER * qty,
+            "underlying_price_at_entry": underlying_price,
+            "strike": strike,
+            "dte_at_entry": dte,
+            "take_profit_price": take_profit_price,
+            "stop_loss_price": stop_loss_price,
+            "underlying_target_price": self.option_underlying_target(direction, underlying_price, strike),
+            "protection": "adopted_internal_exit_rules",
+            "adopted_from_broker": True,
+        }
+
     def open_option_underlyings(self) -> set[str]:
         tracked = self.state.setdefault("option_positions", {})
         return {str(entry.get("underlying", "")).upper() for entry in tracked.values() if entry.get("underlying")}
+
+    @staticmethod
+    def option_underlying_target(direction: str, underlying_price: float, strike: float) -> float | None:
+        if underlying_price <= 0 or strike <= 0:
+            return None
+        if str(direction).lower() == "call":
+            return round_price(max(strike, underlying_price * 1.02))
+        if str(direction).lower() == "put":
+            return round_price(min(strike, underlying_price * 0.98))
+        return None
 
     @staticmethod
     def ticker_bucket(ticker: str) -> str:
@@ -3334,6 +3404,7 @@ class AlpacaStockBot:
 
         take_profit_price = round_price(ask * (1 + self.config.option_profit_target_pct))
         stop_loss_price = round_price(ask * (1 - self.config.option_stop_loss_pct))
+        underlying_target_price = self.option_underlying_target(direction, underlying_price, strike)
         if self.config.option_stop_loss_pct <= 0:
             logging.warning("Skip %s: option stop loss percent must be positive", contract.symbol)
             return False
@@ -3383,6 +3454,7 @@ class AlpacaStockBot:
             "entry_order_id": str(order.id),
             "take_profit_price": take_profit_price,
             "stop_loss_price": stop_loss_price,
+            "underlying_target_price": underlying_target_price,
             "protection": protection,
         }
         self.record_entry(
@@ -3402,6 +3474,9 @@ class AlpacaStockBot:
                 "entry_greeks": model_snapshot,
                 "strike": strike,
                 "dte_at_entry": dte,
+                "take_profit_price": take_profit_price,
+                "stop_loss_price": stop_loss_price,
+                "underlying_target_price": underlying_target_price,
                 "score": score,
                 "setup_features": setup_features or {},
                 "entry_order_id": str(order.id),
@@ -3676,7 +3751,11 @@ class AlpacaStockBot:
                         "entry_model_price": entry.get("entry_model_price"),
                         "entry_realized_vol": entry.get("entry_realized_vol"),
                         "entry_greeks": entry.get("entry_greeks"),
+                        "strike": entry.get("strike"),
                         "dte_at_entry": entry.get("dte_at_entry"),
+                        "take_profit_price": entry.get("take_profit_price"),
+                        "stop_loss_price": entry.get("stop_loss_price"),
+                        "underlying_target_price": entry.get("underlying_target_price"),
                         "underlying_entry_price": entry_underlying_price or None,
                         "underlying_exit_price": current_underlying_price,
                         "underlying_return_pct": underlying_return,

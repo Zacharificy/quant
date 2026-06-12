@@ -16,6 +16,7 @@ from alpaca_stock_bot import (
     normalize_ticker,
     read_trade_levels,
     read_watchlist,
+    save_state,
     save_trade_levels,
     save_watchlist,
 )
@@ -1120,6 +1121,17 @@ def position_exit_plan(
             return f"Stock entry is tracked, but the saved stop/target is missing.{held_order}"
         if open_order:
             return f"Open {plain_enum(open_order.get('side'))} order pending."
+        parsed = option_symbol_parts(symbol)
+        if parsed:
+            current = float(position.current_price or 0)
+            avg = float(position.avg_entry_price or 0)
+            target = avg * (1 + CONFIG.option_profit_target_pct) if avg > 0 else 0
+            stop = avg * (1 - CONFIG.option_stop_loss_pct) if avg > 0 else 0
+            return (
+                f"{parsed['underlying']} {parsed['right']} strike ${parsed['strike']:.2f}, exp {parsed['expiry']}. "
+                f"Untracked by state, using broker avg: TP option >=${target:.2f}, stop <=${stop:.2f}. "
+                f"Now ${current:.2f}. Use Close if you do not want to hold it."
+            )
         return "Untracked position. Use Close if you do not want to hold it."
     entry = float(tracked_option.get("entry_price", position.avg_entry_price) or 0)
     current = float(position.current_price or 0)
@@ -1133,15 +1145,26 @@ def position_exit_plan(
         )
     profit_trigger = entry * (1 + CONFIG.option_profit_target_pct)
     stop_trigger = entry * (1 - CONFIG.option_stop_loss_pct)
+    saved_profit_trigger = float(tracked_option.get("take_profit_price") or profit_trigger)
+    saved_stop_trigger = float(tracked_option.get("stop_loss_price") or stop_trigger)
+    strike = float(tracked_option.get("strike") or 0)
+    underlying = str(tracked_option.get("underlying") or "").upper()
+    direction = str(tracked_option.get("direction") or "").title()
+    underlying_target = tracked_option.get("underlying_target_price")
+    contract_detail = ""
+    if underlying and direction and strike > 0:
+        contract_detail = f"{underlying} {direction} strike ${strike:.2f}. "
+    if underlying_target:
+        contract_detail += f"Underlying guide ${float(underlying_target):.2f}. "
     rr = risk_reward_label(profit_trigger - entry, entry - stop_trigger)
-    if current >= profit_trigger:
+    if current >= saved_profit_trigger:
         status = "Profit target reached."
-    elif current <= stop_trigger:
+    elif current <= saved_stop_trigger:
         status = "Stop-loss reached."
     else:
         status = "Holding."
     return (
-        f"{status} Auto sells at >=${profit_trigger:.2f}, <=${stop_trigger:.2f}, "
+        f"{status} {contract_detail}Auto sells at option >=${saved_profit_trigger:.2f}, <=${saved_stop_trigger:.2f}, "
         f"or after {CONFIG.option_max_hold_days} days. {rr}. Now ${current:.2f}.{held_order}"
     )
 
@@ -1152,6 +1175,8 @@ def build_snapshot() -> dict:
     clock = bot.trading.get_clock()
     bot.update_daily_risk_snapshot()
     bot.reconcile_open_orders(block_new_entries=False)
+    bot.get_option_positions()
+    save_state(bot.state_path, bot.state)
     state = bot.state
     last_scan = state.get("last_scan") or {
         "time": "",
