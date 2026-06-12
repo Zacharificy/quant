@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +11,7 @@ from alpaca_stock_bot import AlpacaStockBot, NY_TZ, StrategyConfig, read_watchli
 
 FOCUS_TICKERS = tuple(
     ticker.strip().upper()
-    for ticker in os.getenv("BOT_RESEARCH_FOCUS_TICKERS", "F,AMC,SPY").split(",")
+    for ticker in os.getenv("BOT_RESEARCH_FOCUS_TICKERS", "F,AMC,SPY,TSLA,NVDA,AMD,QQQ").split(",")
     if ticker.strip()
 )
 
@@ -33,6 +34,7 @@ def ensure_focus_tickers() -> list[str]:
 
 def run_pretrade_research() -> dict:
     tickers = ensure_focus_tickers()
+    add_research_focus_to_extra_tickers()
     config = replace(StrategyConfig(), tickers=tuple(tickers))
     bot = AlpacaStockBot(config)
     today = datetime.now(NY_TZ).date()
@@ -62,6 +64,8 @@ def run_pretrade_research() -> dict:
     for ticker in research_tickers:
         reports[ticker] = research_ticker(bot, ticker, bars, news)
 
+    swing_plan = build_swing_plan(reports)
+
     payload = {
         "created_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
         "focus_tickers": list(FOCUS_TICKERS),
@@ -74,6 +78,7 @@ def run_pretrade_research() -> dict:
         else None,
         "researched_tickers": research_tickers,
         "reports": reports,
+        "swing_plan": swing_plan,
     }
 
     path = research_path()
@@ -83,6 +88,19 @@ def run_pretrade_research() -> dict:
 
     logging.info("Wrote pretrade ticker research to %s", path)
     return payload
+
+
+def add_research_focus_to_extra_tickers() -> None:
+    existing = [
+        ticker.strip().upper()
+        for ticker in os.getenv("BOT_EXTRA_TICKERS", "").split(",")
+        if ticker.strip()
+    ]
+    merged = []
+    for ticker in existing + list(FOCUS_TICKERS):
+        if ticker not in merged:
+            merged.append(ticker)
+    os.environ["BOT_EXTRA_TICKERS"] = ",".join(merged)
 
 
 def research_ticker(bot: AlpacaStockBot, ticker: str, bars: dict, news: dict) -> dict:
@@ -101,12 +119,16 @@ def research_ticker(bot: AlpacaStockBot, ticker: str, bars: dict, news: dict) ->
     atr = float(latest.get("atr_14", 0.0) or 0.0)
     risk_reasons = bot.ticker_risk_reasons(ticker, df, news.get(ticker, []))
     recent_news = summarize_news_items(news.get(ticker, []))
+    macro_items = macro_news_for_ticker(news, ticker)
+    catalyst = score_news_catalysts(bot, ticker, direction, recent_news, macro_items)
+    earnings = earnings_context(news.get(ticker, []))
+    swing_score = max(0.0, min(1.0, float(score) + catalyst["score_boost"] + earnings["score_boost"]))
 
     if risk_reasons:
         recommendation = "avoid"
-    elif direction == "call" and score >= bot.config.min_activity_option_score:
+    elif direction == "call" and swing_score >= bot.config.min_activity_option_score:
         recommendation = "prefer_call"
-    elif direction == "put" and score >= bot.config.min_activity_option_score:
+    elif direction == "put" and swing_score >= bot.config.min_activity_option_score:
         recommendation = "prefer_put"
     else:
         recommendation = "watch"
@@ -116,19 +138,189 @@ def research_ticker(bot: AlpacaStockBot, ticker: str, bars: dict, news: dict) ->
         reasons.extend(score_reasons[:3])
     if risk_reasons:
         reasons.extend(risk_reasons[:3])
+    if catalyst["reasons"]:
+        reasons.extend(catalyst["reasons"][:3])
+    if earnings["reasons"]:
+        reasons.extend(earnings["reasons"][:2])
     if not reasons:
-        reasons.append(f"{direction or 'no direction'} setup score {score:.2f}")
+        reasons.append(f"{direction or 'no direction'} setup score {swing_score:.2f}")
 
     return {
         "status": "ok",
         "recommendation": recommendation,
         "preferred_direction": direction,
         "score": round(float(score), 3),
+        "swing_score": round(float(swing_score), 3),
         "price": round(price, 2),
         "rsi_14": round(rsi, 2),
         "atr_pct": round((atr / price) if price > 0 else 0.0, 4),
         "reasons": reasons,
+        "catalysts": catalyst["items"],
+        "earnings": earnings,
         "news": recent_news,
+    }
+
+
+def macro_news_for_ticker(news: dict, ticker: str) -> list[dict]:
+    macro_sources = []
+    for index_ticker in ("SPY", "QQQ", "DIA", "IWM"):
+        for item in news.get(index_ticker, [])[:30]:
+            if item.get("source_type") == "external_macro":
+                macro_sources.append(item)
+    if ticker in {"SPY", "QQQ", "DIA", "IWM"}:
+        return macro_sources
+    text_filters = {
+        "F": ("ford", "auto", "autos", "tariff", "ev", "china"),
+        "TSLA": ("tesla", "musk", "ev", "tariff", "china", "robotaxi"),
+        "AAPL": ("apple", "iphone", "china", "tariff", "imports"),
+        "NVDA": ("nvidia", "chip", "ai", "semiconductor", "export controls"),
+        "AMD": ("amd", "chip", "ai", "semiconductor", "export controls"),
+        "AVGO": ("broadcom", "chip", "ai", "semiconductor"),
+        "MSFT": ("microsoft", "ai", "cloud", "data center"),
+        "AMC": ("amc", "movie", "consumer", "meme"),
+        "SPCE": ("space", "launch", "spacex", "defense"),
+        "MARA": ("bitcoin", "crypto", "tariff", "rates"),
+        "IREN": ("bitcoin", "crypto", "ai data center", "rates"),
+    }
+    terms = text_filters.get(ticker, (ticker.lower(),))
+    return [item for item in macro_sources if any(term in news_blob(item).lower() for term in terms)]
+
+
+def score_news_catalysts(bot: AlpacaStockBot, ticker: str, direction: str | None, ticker_news: list[dict], macro_news: list[dict]) -> dict:
+    reasons = []
+    items = []
+    boost = 0.0
+    for item in (ticker_news + summarize_news_items(macro_news))[:10]:
+        text = f"{item.get('headline', '')} {item.get('summary', '')}"
+        analysis = bot.analyze_market_news_impact(text)
+        deal = detect_deal_catalyst(text)
+        if analysis:
+            impacted = ticker in set(analysis.get("tickers") or []) or ticker in {"SPY", "QQQ", "DIA", "IWM"}
+            aligns = (direction == "call" and analysis.get("direction") == "up") or (
+                direction == "put" and analysis.get("direction") == "down"
+            )
+            if impacted:
+                confidence = float(analysis.get("confidence", 0.0) or 0.0)
+                if aligns:
+                    boost += min(0.10, confidence * 0.08)
+                    reasons.append(f"trusted news aligns {analysis.get('direction')}: {snippet(text)}")
+                else:
+                    boost -= min(0.08, confidence * 0.06)
+                    reasons.append(f"trusted news conflicts {analysis.get('direction')}: {snippet(text)}")
+                items.append(
+                    {
+                        "type": analysis.get("event", "market_news"),
+                        "direction": analysis.get("direction", "watch"),
+                        "confidence": analysis.get("confidence", 0.0),
+                        "headline": item.get("headline", "")[:180],
+                        "summary": item.get("summary", "")[:260],
+                    }
+                )
+        if deal:
+            aligns = direction == "call" and deal["direction"] == "up"
+            if aligns:
+                boost += deal["boost"]
+            elif direction == "put" and deal["direction"] == "up":
+                boost -= min(0.05, deal["boost"])
+            reasons.append(f"deal catalyst {deal['direction']}: {snippet(text)}")
+            items.append(
+                {
+                    "type": "deal",
+                    "direction": deal["direction"],
+                    "confidence": deal["confidence"],
+                    "headline": item.get("headline", "")[:180],
+                    "summary": item.get("summary", "")[:260],
+                }
+            )
+    return {"score_boost": max(-0.12, min(0.18, boost)), "reasons": dedupe(reasons), "items": items[:5]}
+
+
+def detect_deal_catalyst(text: str) -> dict | None:
+    lowered = str(text or "").lower()
+    deal_terms = (
+        "deal",
+        "agreement",
+        "approved",
+        "approval",
+        "contract",
+        "partnership",
+        "investment",
+        "trade deal",
+        "tariff relief",
+        "exemption",
+        "rollback",
+        "peace deal",
+        "ceasefire",
+    )
+    negative_terms = (
+        "terminated",
+        "blocked",
+        "cancelled",
+        "canceled",
+        "sanctions",
+        "new tariff",
+        "raise tariffs",
+        "investigation",
+    )
+    market_terms = (
+        "trump",
+        "white house",
+        "china",
+        "iran",
+        "tesla",
+        "ford",
+        "nvidia",
+        "chips",
+        "ai",
+        "market",
+        "stocks",
+        "spacex",
+    )
+    if not any(term in lowered for term in deal_terms) or not any(term in lowered for term in market_terms):
+        return None
+    direction = "down" if any(term in lowered for term in negative_terms) else "up"
+    return {"direction": direction, "confidence": 0.68, "boost": 0.08 if direction == "up" else -0.06}
+
+
+def earnings_context(items: list[dict]) -> dict:
+    reasons = []
+    boost = 0.0
+    for item in items[:8]:
+        text = news_blob(item).lower()
+        if "earnings" not in text and "revenue" not in text and "guidance" not in text:
+            continue
+        if any(term in text for term in ("beat", "beats", "raises guidance", "strong guidance", "better than expected")):
+            boost += 0.07
+            reasons.append(f"earnings positive: {snippet(text)}")
+        elif any(term in text for term in ("miss", "misses", "cuts guidance", "weak guidance", "worse than expected")):
+            boost -= 0.08
+            reasons.append(f"earnings risk: {snippet(text)}")
+    return {"score_boost": max(-0.10, min(0.12, boost)), "reasons": dedupe(reasons)}
+
+
+def build_swing_plan(reports: dict) -> dict:
+    ranked = []
+    for ticker, report in reports.items():
+        if not isinstance(report, dict) or report.get("status") != "ok":
+            continue
+        recommendation = str(report.get("recommendation", "watch"))
+        if recommendation == "avoid":
+            continue
+        ranked.append((ticker, report))
+    ranked.sort(key=lambda item: float(item[1].get("swing_score", item[1].get("score", 0.0)) or 0.0), reverse=True)
+    if not ranked:
+        return {"status": "none", "ticker": "", "direction": "", "score": 0.0, "reasons": ["No swing candidate passed research."]}
+    ticker, report = ranked[0]
+    reasons = report.get("reasons") or []
+    return {
+        "status": "ready" if report.get("recommendation") in {"prefer_call", "prefer_put"} else "watch",
+        "ticker": ticker,
+        "direction": report.get("preferred_direction", "watch"),
+        "score": report.get("swing_score", report.get("score", 0.0)),
+        "price": report.get("price", 0.0),
+        "recommendation": report.get("recommendation", "watch"),
+        "reasons": reasons[:5],
+        "catalysts": report.get("catalysts", [])[:3],
     }
 
 
@@ -148,6 +340,25 @@ def summarize_news_items(items: list[dict]) -> list[dict]:
             }
         )
     return summaries
+
+
+def news_blob(item: dict) -> str:
+    return " ".join(str(item.get(field, "") or "") for field in ("headline", "summary", "content"))
+
+
+def snippet(text: str, limit: int = 150) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()[:limit]
+
+
+def dedupe(items: list[str]) -> list[str]:
+    seen = set()
+    out = []
+    for item in items:
+        clean = snippet(item, 220)
+        if clean and clean not in seen:
+            out.append(clean)
+            seen.add(clean)
+    return out
 
 
 def format_research_summary(payload: dict, max_tickers: int = 8, include_news: bool = True) -> str:

@@ -241,7 +241,7 @@ BOT_RESEARCH_RESULTS_DIR=/data/research_results
 BOT_AUTORESEARCH_MARKER_PATH=/data/autoresearch_last_run.json
 ```
 
-The ticker research step runs mainly overnight, every 4 hours by default between 5 PM and 8 AM ET. It always includes `F`, `AMC`, and `SPY` by default, then adds the bot's strongest current option candidates. It writes a compact report with chart score, risky-news checks, recent article summaries, and a `prefer_call` / `prefer_put` / `watch` / `avoid` recommendation. The live bot uses that report lightly: `avoid` can block a trade, while agreement/disagreement only nudges the score.
+The ticker research step runs mainly overnight, every 4 hours by default between 5 PM and 8 AM ET. It always includes `F`, `AMC`, `SPY`, `TSLA`, `NVDA`, `AMD`, and `QQQ` by default, then adds the bot's strongest current option candidates. It writes a compact report with chart score, risky-news checks, recent article summaries, Trump/deal catalyst checks, earnings/guidance context, and a `prefer_call` / `prefer_put` / `watch` / `avoid` recommendation. The dashboard shows the top after-hours/weekend swing idea from that file. The live bot uses that report lightly: `avoid` can block a trade, while agreement/disagreement only nudges the score.
 
 Guardrails:
 

@@ -48,6 +48,10 @@ SCHD_DEFAULT_YIELD_PCT = 3.31
 SCHD_YIELD_CACHE_PATH = Path("schd_yield_cache.json")
 SCHD_YIELD_CACHE_DAYS = 7
 SCHD_YIELD_SOURCE_URL = "https://stockanalysis.com/etf/schd/dividend/"
+SPACEX_INFO = {
+    "summary": "SpaceX is a private aerospace, launch, Starlink satellite internet, and Starship company led by Elon Musk. You usually cannot buy SpaceX directly in a normal brokerage unless it has a public listing or your broker offers a private-market product.",
+    "market_links": "Closest public-market links: TSLA sentiment, defense/aerospace names, satellite/space ETFs, and risk appetite in QQQ/SPY. Treat direct SpaceX claims as watchlist research unless your broker shows a real listed ticker.",
+}
 
 
 PAGE = """
@@ -836,11 +840,11 @@ PAGE = """
         </details>
       </div>
 
-      <details class="panel compact-section">
-        <summary>
-          <span>Scanner Results</span>
-          <span class="pill">best: {{ last_scan.best or "none" }}</span>
-        </summary>
+        <details class="panel compact-section">
+          <summary>
+            <span>Scanner Results</span>
+            <span class="pill">best: {{ last_scan.best or "none" }}</span>
+          </summary>
         {% if last_entry_decision.reasons %}
           <div class="decision-box">
             <strong>Last entry decision: {{ last_entry_decision.status }}</strong>
@@ -879,7 +883,63 @@ PAGE = """
           <summary>Raw local state</summary>
           <div class="subtle" style="margin: 8px 0;">{{ state_path }}</div>
           <pre>{{ state_json }}</pre>
+          </details>
         </details>
+
+      <div class="panel">
+        <div class="row-title">
+          <h2>Swing Research</h2>
+          <span class="pill">{{ swing_plan.status }}</span>
+        </div>
+        <div class="metric">
+          {% if swing_plan.ticker %}
+            {{ swing_plan.ticker }} {{ swing_plan.direction }}
+          {% else %}
+            No setup
+          {% endif %}
+        </div>
+        <div class="subtle">
+          Score {{ swing_plan.score }}{% if swing_plan.price %} near ${{ swing_plan.price }}{% endif %}.
+          Built for after-hours/weekend planning, not automatic overnight order entry.
+        </div>
+        {% if swing_plan.reasons %}
+          <ul class="reason-list">
+            {% for reason in swing_plan.reasons %}
+              <li>{{ reason }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+        {% if swing_plan.catalysts %}
+          <table>
+            <thead>
+              <tr>
+                <th>Catalyst</th>
+                <th>Direction</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for catalyst in swing_plan.catalysts %}
+                <tr>
+                  <td>
+                    <strong>{{ catalyst.type }}</strong>
+                    <div class="subtle">{{ catalyst.headline or catalyst.summary }}</div>
+                  </td>
+                  <td>{{ catalyst.direction }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+        <div class="subtle" style="margin-top:10px;">Updated {{ swing_plan.updated_at }} from closed-market ticker research.</div>
+      </div>
+
+      <details class="panel compact-section">
+        <summary>
+          <span>SpaceX Watch</span>
+          <span class="pill">private / catalyst</span>
+        </summary>
+        <p class="subtle">{{ spacex.summary }}</p>
+        <p class="subtle">{{ spacex.market_links }}</p>
       </details>
 
       <div class="panel">
@@ -1072,6 +1132,42 @@ def current_schd_yield() -> dict:
             "fetched_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
             "status": f"fallback: {exc}",
         }
+
+
+def read_ticker_research() -> dict:
+    path = Path(os.getenv("BOT_TICKER_RESEARCH_PATH", "ticker_research.json"))
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception as exc:
+        logging.warning("Could not read ticker research from %s: %s", path, exc)
+        return {}
+
+
+def dashboard_swing_plan() -> dict:
+    payload = read_ticker_research()
+    plan = payload.get("swing_plan") or {}
+    if not plan:
+        return {
+            "status": "not researched",
+            "ticker": "",
+            "direction": "",
+            "score": "0.00",
+            "price": "",
+            "reasons": ["Closed-market ticker research has not produced a swing plan yet."],
+            "catalysts": [],
+            "updated_at": payload.get("created_at", "not checked"),
+        }
+    plan = dict(plan)
+    plan["score"] = f"{float(plan.get('score', 0.0) or 0.0):.2f}"
+    price = float(plan.get("price", 0.0) or 0.0)
+    plan["price"] = f"{price:,.2f}" if price > 0 else ""
+    plan["updated_at"] = payload.get("created_at", "not checked")
+    plan["reasons"] = plan.get("reasons") or []
+    plan["catalysts"] = plan.get("catalysts") or []
+    return plan
 
 
 def schd_projection() -> dict:
@@ -1474,6 +1570,8 @@ def build_snapshot() -> dict:
         "update_levels_url": url_for("update_levels"),
         "index_url": url_for("index"),
         "schd": schd_projection(),
+        "swing_plan": dashboard_swing_plan(),
+        "spacex": SPACEX_INFO,
     }
 
 
