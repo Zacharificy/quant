@@ -10,14 +10,15 @@ This project is a standalone Alpaca Paper trading console with a local/Railway d
 - Internal paper sizing cap: `$1,500` by default
 - Max open option positions: `3`
 - Sizing: options are sized as contracts, where `1 contract = 100 shares`
-- Entry: daily 50/200 EMA uptrend, 20-day high breakout, and RSI confirmation
-- Exits: option profit target, stop loss, time stop, or Alpaca bracket protection when accepted
+- Entry: multi-timeframe chart confirmation with news/research nudges, while still requiring option liquidity and Greek checks
+- Exits: default option plan is about `+35%` take profit, `-15%` stop, day-0 profit only for a fast `+45%` move, and a 5-day max hold
 - Learning: closed trades now adjust future scores with win rate, profit factor, and downside-adjusted return so one lucky winner does not hide repeated bad losses
 - Cooldown: 7 calendar days after closing the same ticker
 - Orders: Alpaca Paper orders only
 - Options: long-only calls/puts, limit orders, no naked short options
 
 This is a paper strategy, not a proven profitable system. Let it build a real closed-trade sample before trusting any setting.
+The current default option settings are meant for short swings, not pure 0DTE scalps: prefer roughly `3-10 DTE`, hold winning setups for `2-5` trading days if the stop is not hit, and avoid treating noisy headlines as market catalysts.
 
 ## Run On Your PC
 
@@ -241,7 +242,9 @@ BOT_RESEARCH_RESULTS_DIR=/data/research_results
 BOT_AUTORESEARCH_MARKER_PATH=/data/autoresearch_last_run.json
 ```
 
-The ticker research step runs mainly overnight, every 4 hours by default between 5 PM and 8 AM ET. It always includes `F`, `AMC`, `SPY`, `TSLA`, `NVDA`, `AMD`, and `QQQ` by default, then adds the bot's strongest current option candidates. It writes a compact report with chart score, risky-news checks, recent article summaries, Trump/deal catalyst checks, earnings/guidance context, and a `prefer_call` / `prefer_put` / `watch` / `avoid` recommendation. The dashboard shows the top after-hours/weekend swing idea from that file. The live bot uses that report lightly: `avoid` can block a trade, while agreement/disagreement only nudges the score.
+The ticker research step runs mainly overnight, every 4 hours by default between 5 PM and 8 AM ET. It always includes `F`, `AMC`, `SPY`, `TSLA`, `NVDA`, `AMD`, and `QQQ` by default, then adds the bot's strongest current option candidates. It writes a compact report with chart score, risky-news checks, recent article summaries, Trump/deal catalyst checks, earnings/guidance context, and a `prefer_call` / `prefer_put` / `watch` / `avoid` recommendation. The dashboard and Discord summary now show a concrete next-session swing plan with hold window, entry discipline, exit plan, setup reasons, and catalysts. The live bot uses that report lightly: `avoid` can block a trade, while agreement/disagreement only nudges the score.
+
+Deal-catalyst scoring is intentionally narrow. It needs a real market, policy, or company context such as tariffs, trade deals, ceasefires, defense contracts, export controls, semiconductors, autos, SpaceX, Tesla, Ford, or Nvidia. Generic legal/media settlements are ignored so junk headlines do not boost index trades.
 
 Guardrails:
 

@@ -237,20 +237,29 @@ def score_news_catalysts(bot: AlpacaStockBot, ticker: str, direction: str | None
 
 def detect_deal_catalyst(text: str) -> dict | None:
     lowered = str(text or "").lower()
-    deal_terms = (
-        "deal",
-        "agreement",
-        "approved",
-        "approval",
-        "contract",
-        "partnership",
-        "investment",
+    legal_or_media_noise = (
+        "dominion voting",
+        "voting systems",
+        "defamation",
+        "lawsuit",
+        "settlement reached",
+        "on-air claims",
+        "fox news acknowledges",
+    )
+    market_specific_terms = (
         "trade deal",
         "tariff relief",
-        "exemption",
-        "rollback",
+        "tariff exemption",
+        "tariff rollback",
         "peace deal",
         "ceasefire",
+        "defense contract",
+        "government contract",
+        "supply agreement",
+        "strategic partnership",
+        "investment",
+        "approved",
+        "approval",
     )
     negative_terms = (
         "terminated",
@@ -262,24 +271,61 @@ def detect_deal_catalyst(text: str) -> dict | None:
         "raise tariffs",
         "investigation",
     )
-    market_terms = (
+    policy_or_ticker_terms = (
         "trump",
         "white house",
         "china",
         "iran",
+        "tariff",
         "tesla",
         "ford",
         "nvidia",
         "chips",
+        "semiconductor",
         "ai",
-        "market",
-        "stocks",
         "spacex",
+        "defense",
+        "export controls",
     )
-    if not any(term in lowered for term in deal_terms) or not any(term in lowered for term in market_terms):
+    if any(term in lowered for term in legal_or_media_noise) and not any(
+        term in lowered for term in market_specific_terms
+    ):
+        return None
+    if not any(term in lowered for term in market_specific_terms):
+        return None
+    if not any(term in lowered for term in policy_or_ticker_terms):
         return None
     direction = "down" if any(term in lowered for term in negative_terms) else "up"
     return {"direction": direction, "confidence": 0.68, "boost": 0.08 if direction == "up" else -0.06}
+
+
+def swing_hold_plan(direction: str) -> str:
+    option_type = "calls" if direction == "call" else "puts" if direction == "put" else "options"
+    return (
+        f"Swing {option_type} for 2-5 trading days when the setup stays valid. "
+        "Prefer 3-10 DTE so theta is not forcing a same-day decision."
+    )
+
+
+def swing_entry_plan(report: dict) -> str:
+    price = float(report.get("price", 0.0) or 0.0)
+    atr_pct = float(report.get("atr_pct", 0.0) or 0.0)
+    atr_dollars = price * atr_pct if price > 0 and atr_pct > 0 else 0.0
+    if price > 0 and atr_dollars > 0:
+        return (
+            f"Use regular-hours confirmation near ${price:.2f}. "
+            f"Do not chase a gap larger than about ${atr_dollars:.2f} from the research price."
+        )
+    if price > 0:
+        return f"Use regular-hours confirmation near ${price:.2f}; avoid chasing a large opening gap."
+    return "Use regular-hours confirmation; avoid chasing a large opening gap."
+
+
+def swing_exit_plan() -> str:
+    return (
+        "Exit plan: target about +35% on option premium, stop about -15%, "
+        "allow day-0 profit only if it is already +45% or better, and force-exit by day 5."
+    )
 
 
 def earnings_context(items: list[dict]) -> dict:
@@ -321,6 +367,9 @@ def build_swing_plan(reports: dict) -> dict:
         "recommendation": report.get("recommendation", "watch"),
         "reasons": reasons[:5],
         "catalysts": report.get("catalysts", [])[:3],
+        "hold_plan": swing_hold_plan(str(report.get("preferred_direction", "watch"))),
+        "entry_plan": swing_entry_plan(report),
+        "exit_plan": swing_exit_plan(),
     }
 
 
@@ -377,11 +426,32 @@ def format_research_summary(payload: dict, max_tickers: int = 8, include_news: b
     else:
         lines.append("Best next-session idea: `none`")
 
+    swing = payload.get("swing_plan") or {}
+    if swing.get("ticker"):
+        lines.append("")
+        lines.append("**Swing plan**")
+        lines.append(
+            f"`{swing.get('ticker')}` `{swing.get('direction', 'watch')}` "
+            f"score `{float(swing.get('score', 0.0) or 0.0):.2f}` "
+            f"near `${float(swing.get('price', 0.0) or 0.0):.2f}`"
+        )
+        for key in ("hold_plan", "entry_plan", "exit_plan"):
+            value = str(swing.get(key, "") or "").strip()
+            if value:
+                lines.append(f"- {value}")
+        for reason in (swing.get("reasons") or [])[:3]:
+            lines.append(f"- why: {str(reason)[:170]}")
+        for catalyst in (swing.get("catalysts") or [])[:2]:
+            direction = str(catalyst.get("direction", "watch"))
+            headline = str(catalyst.get("headline") or catalyst.get("summary") or "").strip()
+            if headline:
+                lines.append(f"- catalyst {direction}: {headline[:170]}")
+
     lines.append("")
     for ticker, report in top_research_reports(reports, max_tickers=max_tickers):
         recommendation = str(report.get("recommendation", "watch"))
         direction = str(report.get("preferred_direction", "n/a"))
-        score = float(report.get("score", 0.0) or 0.0)
+        score = float(report.get("swing_score", report.get("score", 0.0)) or 0.0)
         price = float(report.get("price", 0.0) or 0.0)
         rsi = float(report.get("rsi_14", 0.0) or 0.0)
         marker = research_marker(recommendation, direction)
@@ -414,7 +484,7 @@ def top_research_reports(reports: dict, max_tickers: int = 8) -> list[tuple[str,
             "watch": 2,
             "avoid": 1,
         }.get(recommendation, 0)
-        return priority, float(report.get("score", 0.0) or 0.0)
+        return priority, float(report.get("swing_score", report.get("score", 0.0)) or 0.0)
 
     clean = [(str(ticker).upper(), report) for ticker, report in reports.items() if isinstance(report, dict)]
     clean.sort(key=sort_key, reverse=True)

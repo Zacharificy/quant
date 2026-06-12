@@ -148,10 +148,10 @@ class StrategyConfig:
     max_option_positions: int = 3
     max_option_contracts_per_trade: int = 1
     max_option_contracts_per_underlying: int = 1
-    min_option_dte: int = 1
-    max_option_dte: int = 7
-    high_price_option_dte: int = 5
-    low_price_option_dte: int = 1
+    min_option_dte: int = 2
+    max_option_dte: int = 10
+    high_price_option_dte: int = 7
+    low_price_option_dte: int = 3
     high_price_option_threshold: float = 100.0
     max_option_spread_pct: float = 0.45
     max_option_model_premium_ratio: float = 1.75
@@ -161,11 +161,13 @@ class StrategyConfig:
     min_option_delta_theta_score: float = 1.10
     min_realized_vol: float = 0.12
     max_realized_vol: float = 1.50
-    option_profit_target_pct: float = 0.20
-    option_stop_loss_pct: float = 0.10
+    option_profit_target_pct: float = 0.35
+    option_stop_loss_pct: float = 0.15
     option_trailing_stop_enabled: bool = True
-    option_trail_start_r: float = 1.5
+    option_trail_start_r: float = 2.0
     option_trail_step_r: float = 0.5
+    option_min_hold_days_for_profit: int = 1
+    option_day0_take_profit_pct: float = 0.45
     index_long_only: bool = True
     use_intraday_timeframes: bool = True
     intraday_lookback_days: int = 7
@@ -609,6 +611,12 @@ class AlpacaStockBot:
             ),
             "option_trail_start_r": env_float("BOT_OPTION_TRAIL_START_R", config.option_trail_start_r, 0.0),
             "option_trail_step_r": env_float("BOT_OPTION_TRAIL_STEP_R", config.option_trail_step_r, 0.1),
+            "option_min_hold_days_for_profit": env_int(
+                "BOT_OPTION_MIN_HOLD_DAYS_FOR_PROFIT", config.option_min_hold_days_for_profit, 0
+            ),
+            "option_day0_take_profit_pct": env_float(
+                "BOT_OPTION_DAY0_TAKE_PROFIT_PCT", config.option_day0_take_profit_pct, 0.0
+            ),
             "index_long_only": env_bool("BOT_INDEX_LONG_ONLY", config.index_long_only),
             "use_intraday_timeframes": env_bool("BOT_USE_INTRADAY_TIMEFRAMES", config.use_intraday_timeframes),
             "intraday_lookback_days": env_int("BOT_INTRADAY_LOOKBACK_DAYS", config.intraday_lookback_days, 1),
@@ -3870,7 +3878,14 @@ class AlpacaStockBot:
             )
             stop_trigger = float(entry.get("stop_loss_price") or entry_price * (1 - self.config.option_stop_loss_pct))
             trail_stop = float(entry.get("trailing_stop_price", 0.0) or 0.0)
-            if self.config.option_trailing_stop_enabled and entry_price > 0 and bid > 0:
+            min_profit_hold_days = max(0, int(self.config.option_min_hold_days_for_profit))
+            day0_profit_trigger = round_price(
+                entry_price * (1 + max(self.config.option_profit_target_pct, self.config.option_day0_take_profit_pct))
+            )
+            standard_profit_exit_allowed = held_days >= min_profit_hold_days
+            fast_profit_exit_allowed = bid >= day0_profit_trigger
+            profit_exit_allowed = standard_profit_exit_allowed or fast_profit_exit_allowed
+            if self.config.option_trailing_stop_enabled and profit_exit_allowed and entry_price > 0 and bid > 0:
                 risk_per_contract = max(0.01, entry_price - stop_trigger)
                 if risk_per_contract > 0:
                     profit_r = max(0.0, (best_bid - entry_price) / risk_per_contract)
@@ -3884,8 +3899,12 @@ class AlpacaStockBot:
             reason = None
             if trail_stop > 0 and bid <= trail_stop and best_bid > entry_price:
                 reason = f"option trailing stop {trail_stop:.2f}"
-            elif bid >= profit_trigger:
-                reason = f"option take profit {profit_trigger:.2f}"
+            elif bid >= profit_trigger and profit_exit_allowed:
+                reason = (
+                    f"option fast take profit {day0_profit_trigger:.2f}"
+                    if fast_profit_exit_allowed and not standard_profit_exit_allowed
+                    else f"option take profit {profit_trigger:.2f}"
+                )
             elif bid <= stop_trigger:
                 reason = f"option stop loss {stop_trigger:.2f}"
             elif held_days >= self.config.option_max_hold_days:

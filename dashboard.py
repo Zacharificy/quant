@@ -179,6 +179,19 @@ PAGE = """
       line-height: 1.35;
     }
 
+    .plan-box {
+      display: grid;
+      gap: 6px;
+      margin: 10px 0;
+      padding: 10px 12px;
+      border: 1px solid #dbe6f2;
+      border-radius: 6px;
+      background: #f8fbff;
+      color: #2d4056;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
     .row-title {
       display: flex;
       justify-content: space-between;
@@ -902,6 +915,13 @@ PAGE = """
           Score {{ swing_plan.score }}{% if swing_plan.price %} near ${{ swing_plan.price }}{% endif %}.
           Built for after-hours/weekend planning, not automatic overnight order entry.
         </div>
+        {% if swing_plan.hold_plan or swing_plan.entry_plan or swing_plan.exit_plan %}
+          <div class="plan-box">
+            {% if swing_plan.hold_plan %}<div>{{ swing_plan.hold_plan }}</div>{% endif %}
+            {% if swing_plan.entry_plan %}<div>{{ swing_plan.entry_plan }}</div>{% endif %}
+            {% if swing_plan.exit_plan %}<div>{{ swing_plan.exit_plan }}</div>{% endif %}
+          </div>
+        {% endif %}
         {% if swing_plan.reasons %}
           <ul class="reason-list">
             {% for reason in swing_plan.reasons %}
@@ -1158,6 +1178,9 @@ def dashboard_swing_plan() -> dict:
             "price": "",
             "reasons": ["Closed-market ticker research has not produced a swing plan yet."],
             "catalysts": [],
+            "hold_plan": "",
+            "entry_plan": "",
+            "exit_plan": "",
             "updated_at": payload.get("created_at", "not checked"),
         }
     plan = dict(plan)
@@ -1167,6 +1190,9 @@ def dashboard_swing_plan() -> dict:
     plan["updated_at"] = payload.get("created_at", "not checked")
     plan["reasons"] = plan.get("reasons") or []
     plan["catalysts"] = plan.get("catalysts") or []
+    plan["hold_plan"] = plan.get("hold_plan", "")
+    plan["entry_plan"] = plan.get("entry_plan", "")
+    plan["exit_plan"] = plan.get("exit_plan", "")
     return plan
 
 
