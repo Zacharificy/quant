@@ -21,7 +21,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.historical.news import NewsClient
 from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.requests import NewsRequest, OptionLatestQuoteRequest, StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import ContractType, OrderClass, OrderSide, OrderType, PositionIntent, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import (
@@ -167,6 +167,10 @@ class StrategyConfig:
     option_trail_start_r: float = 1.0
     option_trail_step_r: float = 1.0
     index_long_only: bool = True
+    use_intraday_timeframes: bool = True
+    intraday_lookback_days: int = 7
+    ml_quality_enabled: bool = True
+    min_ml_quality_samples: int = 8
     option_max_hold_days: int = 5
     cancel_stale_order_minutes: int = 30
     min_learning_trades_per_setup: int = 6
@@ -576,6 +580,10 @@ class AlpacaStockBot:
             "option_trail_start_r": env_float("BOT_OPTION_TRAIL_START_R", config.option_trail_start_r, 0.0),
             "option_trail_step_r": env_float("BOT_OPTION_TRAIL_STEP_R", config.option_trail_step_r, 0.1),
             "index_long_only": env_bool("BOT_INDEX_LONG_ONLY", config.index_long_only),
+            "use_intraday_timeframes": env_bool("BOT_USE_INTRADAY_TIMEFRAMES", config.use_intraday_timeframes),
+            "intraday_lookback_days": env_int("BOT_INTRADAY_LOOKBACK_DAYS", config.intraday_lookback_days, 1),
+            "ml_quality_enabled": env_bool("BOT_ML_QUALITY_ENABLED", config.ml_quality_enabled),
+            "min_ml_quality_samples": env_int("BOT_MIN_ML_QUALITY_SAMPLES", config.min_ml_quality_samples, 3),
             "option_max_hold_days": env_int("BOT_OPTION_MAX_HOLD_DAYS", config.option_max_hold_days, 1),
             "min_learning_trades_per_setup": env_int(
                 "BOT_MIN_LEARNING_TRADES_PER_SETUP", config.min_learning_trades_per_setup, 1
@@ -641,6 +649,7 @@ class AlpacaStockBot:
             save_state(self.state_path, self.state)
             return
         bars = self.fetch_all_bars()
+        intraday_bars = self.fetch_intraday_bars()
         news = self.fetch_recent_news()
         positions = self.get_positions()
         self.sync_state_with_positions(positions)
@@ -675,7 +684,7 @@ class AlpacaStockBot:
         failed_option_underlyings = set()
         option_attempts = 0
         while self.config.trade_options and len(self.state.setdefault("option_positions", {})) < self.config.max_option_positions:
-            option_candidate = self.find_best_option_trade(today, bars, positions, news, failed_option_underlyings)
+            option_candidate = self.find_best_option_trade(today, bars, positions, news, failed_option_underlyings, intraday_bars)
             if not option_candidate:
                 break
             option_attempts += 1
@@ -728,7 +737,7 @@ class AlpacaStockBot:
             save_state(self.state_path, self.state)
             return
 
-        candidate = self.find_best_stock(today, bars, positions, news)
+        candidate = self.find_best_stock(today, bars, positions, news, intraday_bars)
         if candidate is None:
             logging.info("No stock passed the scanner today.")
             option_best = (self.state.get("last_option_scan") or {}).get("best") or {}
@@ -757,8 +766,8 @@ class AlpacaStockBot:
             save_state(self.state_path, self.state)
             return
 
-        ticker, score, price = candidate
-        stock_order_opened = self.enter_position(ticker, score, price)
+        ticker, score, price, setup_features = candidate
+        stock_order_opened = self.enter_position(ticker, score, price, setup_features)
         self.record_entry_decision(
             "entry_submitted" if stock_order_opened else "entry_sized_out",
             [
@@ -932,11 +941,12 @@ class AlpacaStockBot:
         self.update_daily_risk_snapshot()
         self.reconcile_open_orders(block_new_entries=False)
         bars = self.fetch_all_bars()
+        intraday_bars = self.fetch_intraday_bars()
         news = self.fetch_recent_news()
         positions = self.get_positions()
         self.sync_state_with_positions(positions)
-        self.find_best_stock(today, bars, positions, news)
-        self.find_best_option_trade(today, bars, positions, news)
+        self.find_best_stock(today, bars, positions, news, intraday_bars)
+        self.find_best_option_trade(today, bars, positions, news, intraday_bars=intraday_bars)
         save_state(self.state_path, self.state)
 
     def update_daily_risk_snapshot(self) -> dict:
@@ -1478,11 +1488,60 @@ class AlpacaStockBot:
             bars[ticker] = self.add_indicators(df)
         return bars
 
+    def fetch_intraday_bars(self) -> dict[str, dict[str, pd.DataFrame]]:
+        if not self.config.use_intraday_timeframes:
+            return {}
+        start = datetime.now(timezone.utc) - timedelta(days=self.config.intraday_lookback_days)
+        specs = {
+            "5m": TimeFrame(5, TimeFrameUnit.Minute),
+            "15m": TimeFrame(15, TimeFrameUnit.Minute),
+            "1h": TimeFrame(1, TimeFrameUnit.Hour),
+        }
+        result: dict[str, dict[str, pd.DataFrame]] = {}
+        status = {"status": "ok", "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"), "frames": {}}
+        for label, timeframe in specs.items():
+            try:
+                request = StockBarsRequest(
+                    symbol_or_symbols=list(self.config.tickers),
+                    timeframe=timeframe,
+                    start=start,
+                    end=datetime.now(timezone.utc),
+                    feed=self.data_feed,
+                )
+                raw = self.data.get_stock_bars(request).df
+            except Exception as exc:
+                logging.warning("Intraday %s bars unavailable: %s", label, exc)
+                status["status"] = "partial"
+                status["frames"][label] = {"status": "unavailable", "error": str(exc)[:160]}
+                continue
+            frame_map = {}
+            for ticker in self.config.tickers:
+                try:
+                    df = raw.loc[ticker].copy().sort_index()
+                except KeyError:
+                    continue
+                if df.empty:
+                    continue
+                frame_map[ticker] = self.add_intraday_indicators(df)
+            result[label] = frame_map
+            status["frames"][label] = {"status": "ok", "tickers": len(frame_map)}
+        self.state["last_intraday_check"] = status
+        return result
+
     def add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df["ema_50"] = df["close"].ewm(span=50, adjust=False).mean()
         df["ema_200"] = df["close"].ewm(span=200, adjust=False).mean()
         df["rsi_14"] = compute_rsi(df["close"], 14)
         df["atr_14"] = compute_atr(df, 14)
+        return df
+
+    def add_intraday_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df["ema_8"] = df["close"].ewm(span=8, adjust=False).mean()
+        df["ema_21"] = df["close"].ewm(span=21, adjust=False).mean()
+        df["rsi_14"] = compute_rsi(df["close"], 14)
+        if "volume" in df.columns:
+            df["volume_avg_20"] = df["volume"].rolling(20).mean()
         return df
 
     def get_positions(self) -> dict[str, object]:
@@ -1549,6 +1608,7 @@ class AlpacaStockBot:
                             "qty": qty,
                             "pnl": pnl,
                             "return_pct": pnl / (entry * qty) if entry > 0 and qty > 0 else 0,
+                            "setup_features": tracked.get(ticker, {}).get("setup_features", {}),
                             "reason": reason,
                             "exit_order_id": str(order.id),
                         }
@@ -1743,6 +1803,7 @@ class AlpacaStockBot:
         bars: dict[str, pd.DataFrame],
         positions: dict[str, object],
         news: dict[str, list[dict[str, str]]],
+        intraday_bars: dict[str, dict[str, pd.DataFrame]] | None = None,
     ):
         passed = []
         scan = {
@@ -1776,8 +1837,12 @@ class AlpacaStockBot:
             score, score_reasons = self.score_long_stock_trade(ticker, df)
             reasons.extend(score_reasons)
             reasons.extend(self.ticker_risk_reasons(ticker, df, news.get(ticker, [])))
+            features = {}
+            ml_note = []
             if not reasons:
                 score = self.apply_macro_relief_score(ticker, "call", score)
+                features = self.setup_features(ticker, "call", df, intraday_bars or {})
+                score, ml_note = self.apply_ml_quality_score(score, features)
                 score = self.apply_learning_score(score, "stock", ticker, "long")
             if score < self.config.min_score:
                 reasons.append(f"score {score:.2f} below {self.config.min_score:.2f}")
@@ -1791,7 +1856,8 @@ class AlpacaStockBot:
                 "score": round(rank_score, 3),
                 "base_score": round(score, 3),
                 "status": "passed",
-                "reasons": [],
+                "reasons": ml_note[:2],
+                "features": features,
             }
         passed.sort(key=lambda item: item[1], reverse=True)
         best = passed[0] if passed else None
@@ -1806,7 +1872,10 @@ class AlpacaStockBot:
             best = None
         scan["best"] = best[0] if best else None
         self.state["last_scan"] = scan
-        return (best[0], best[1], best[2]) if best else None
+        if not best:
+            return None
+        best_features = (scan["candidates"].get(best[0]) or {}).get("features", {})
+        return best[0], best[1], best[2], best_features
 
     def find_best_option_trade(
         self,
@@ -1815,6 +1884,7 @@ class AlpacaStockBot:
         positions: dict[str, object],
         news: dict[str, list[dict[str, str]]],
         skip_tickers: set[str] | None = None,
+        intraday_bars: dict[str, dict[str, pd.DataFrame]] | None = None,
     ):
         skip_tickers = skip_tickers or set()
         option_scan = {
@@ -1875,7 +1945,12 @@ class AlpacaStockBot:
                 reasons = []
             if not reasons:
                 score = self.apply_macro_relief_score(ticker, direction, score)
+                features = self.setup_features(ticker, direction or "unknown", df, intraday_bars or {})
+                score, ml_note = self.apply_ml_quality_score(score, features)
                 score = self.apply_learning_score(score, "option", ticker, direction)
+            else:
+                features = {}
+                ml_note = []
             ideal_score = max(self.config.min_score, self.config.min_option_score)
             activity_score = min(ideal_score, self.config.min_activity_option_score)
             if score < activity_score or reasons:
@@ -1925,8 +2000,10 @@ class AlpacaStockBot:
                     ([] if score >= ideal_score else [f"below ideal {ideal_score:.2f}, allowed as best available"])
                     + [f"levels: {reason}" for reason in level_report.get("reasons", [])]
                     + (["macro relief index call"] if macro_relief else [])
+                    + ml_note[:2]
                     + research_note
                 ),
+                "features": features,
             }
         passed.sort(key=lambda item: item[1], reverse=True)
         best = passed[0] if passed else None
@@ -1941,7 +2018,10 @@ class AlpacaStockBot:
             best = None
         option_scan["best"] = {"ticker": best[0], "direction": best[3], "score": round(best[1], 3)} if best else None
         self.state["last_option_scan"] = option_scan
-        return (best[0], best[1], best[2], best[3]) if best else None
+        if not best:
+            return None
+        best_features = (option_scan["candidates"].get(best[0]) or {}).get("features", {})
+        return best[0], best[1], best[2], best[3], best_features
 
     def cross_sectional_score(self, signal_score: float, df: pd.DataFrame, direction: str = "long") -> float:
         """Rank candidates without letting medium-term trend dominate the setup."""
@@ -1962,6 +2042,112 @@ class AlpacaStockBot:
         momentum_score = max(0.0, min(directional_momentum / 0.35, 1.0))
         volatility_score = 1 - min((atr / price) / self.config.max_atr_pct, 1)
         return max(0.0, min((signal_score * 0.75) + (momentum_score * 0.10) + (volatility_score * 0.15), 1.0))
+
+    def setup_features(
+        self,
+        ticker: str,
+        direction: str,
+        daily_df: pd.DataFrame,
+        intraday_bars: dict[str, dict[str, pd.DataFrame]],
+    ) -> dict:
+        features = {"ticker": ticker, "direction": direction}
+        if daily_df is not None and len(daily_df) >= 25:
+            latest = daily_df.iloc[-1]
+            prior = daily_df.iloc[-2]
+            price = self.safe_float(latest.get("close"), 0.0)
+            atr = self.safe_float(latest.get("atr_14"), 0.0)
+            fast = self.safe_float(latest.get("ema_50"), 0.0)
+            slow = self.safe_float(latest.get("ema_200"), 0.0)
+            rsi = self.safe_float(latest.get("rsi_14"), 50.0)
+            prior_close = self.safe_float(prior.get("close"), price)
+            features.update(
+                {
+                    "daily_rsi_bucket": self.bucket_value(rsi, (35, 45, 55, 65, 75)),
+                    "daily_atr_pct_bucket": self.bucket_value((atr / price) if price > 0 else 0, (0.015, 0.03, 0.05, 0.08)),
+                    "daily_trend": "up" if price > fast > slow else "down" if price < fast < slow else "mixed",
+                    "daily_green": bool(price > prior_close),
+                    "long_index": bool(ticker in {"SPY", "QQQ", "IWM", "DIA"} and direction == "call"),
+                }
+            )
+        for label in ("5m", "15m", "1h"):
+            frame = (intraday_bars.get(label) or {}).get(ticker)
+            if frame is None or len(frame) < 25:
+                features[f"{label}_ready"] = False
+                continue
+            latest = frame.iloc[-1]
+            previous = frame.iloc[-2]
+            close = self.safe_float(latest.get("close"), 0.0)
+            ema8 = self.safe_float(latest.get("ema_8"), 0.0)
+            ema21 = self.safe_float(latest.get("ema_21"), 0.0)
+            rsi = self.safe_float(latest.get("rsi_14"), 50.0)
+            volume = self.safe_float(latest.get("volume"), 0.0)
+            avg_volume = self.safe_float(latest.get("volume_avg_20"), 0.0)
+            previous_close = self.safe_float(previous.get("close"), close)
+            features.update(
+                {
+                    f"{label}_ready": True,
+                    f"{label}_trend": "up" if close > ema8 > ema21 else "down" if close < ema8 < ema21 else "mixed",
+                    f"{label}_rsi_bucket": self.bucket_value(rsi, (35, 45, 55, 65, 75)),
+                    f"{label}_green": bool(close > previous_close),
+                    f"{label}_volume": "high" if avg_volume > 0 and volume > avg_volume * 1.25 else "normal",
+                }
+            )
+        return features
+
+    @staticmethod
+    def safe_float(value, default: float = 0.0) -> float:
+        try:
+            if pd.isna(value):
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def bucket_value(value: float, thresholds: tuple[float, ...]) -> str:
+        for threshold in thresholds:
+            if value < threshold:
+                return f"<{threshold:g}"
+        return f">={thresholds[-1]:g}"
+
+    def apply_ml_quality_score(self, score: float, features: dict) -> tuple[float, list[str]]:
+        if not self.config.ml_quality_enabled or not features:
+            return score, []
+        trades = [
+            trade
+            for trade in self.state.setdefault("trade_history", {}).get("closed_trades", [])
+            if isinstance(trade.get("setup_features"), dict)
+        ]
+        if len(trades) < self.config.min_ml_quality_samples:
+            features["ml_quality"] = f"untrained {len(trades)}/{self.config.min_ml_quality_samples}"
+            return score, [features["ml_quality"]]
+        keys = (
+            "direction",
+            "daily_trend",
+            "daily_rsi_bucket",
+            "daily_atr_pct_bucket",
+            "long_index",
+            "5m_trend",
+            "15m_trend",
+            "1h_trend",
+            "15m_volume",
+        )
+        similar = []
+        for trade in trades[-150:]:
+            past = trade.get("setup_features") or {}
+            matches = sum(1 for key in keys if key in features and past.get(key) == features.get(key))
+            if matches >= 4:
+                similar.append((matches, float(trade.get("pnl", 0.0)), float(trade.get("return_pct", 0.0))))
+        if len(similar) < max(3, self.config.min_ml_quality_samples // 2):
+            features["ml_quality"] = f"low sample {len(similar)} similar"
+            return score, [features["ml_quality"]]
+        weighted_pnl = sum(pnl * matches for matches, pnl, _ret in similar)
+        weight = sum(matches for matches, _pnl, _ret in similar)
+        avg_pnl = weighted_pnl / weight if weight else 0.0
+        win_rate = sum(1 for _matches, pnl, _ret in similar if pnl > 0) / len(similar)
+        adjustment = max(-0.08, min(0.08, (win_rate - 0.5) * 0.10 + (0.02 if avg_pnl > 0 else -0.02)))
+        features["ml_quality"] = f"{len(similar)} similar, win {win_rate:.0%}, adj {adjustment:+.2f}"
+        return max(0.0, min(1.0, score + adjustment)), [f"ML quality {features['ml_quality']}"]
 
     def score_directional_trade(self, ticker: str, df: pd.DataFrame) -> tuple[str | None, float, list[str]]:
         choices = []
@@ -2518,7 +2704,7 @@ class AlpacaStockBot:
         last_exit = datetime.fromisoformat(raw).date()
         return (today - last_exit).days < self.config.cooldown_days
 
-    def enter_position(self, ticker: str, score: float, price: float) -> bool:
+    def enter_position(self, ticker: str, score: float, price: float, setup_features: dict | None = None) -> bool:
         account = self.trading.get_account()
         buying_power = float(account.buying_power)
         cash = float(account.cash)
@@ -2585,6 +2771,7 @@ class AlpacaStockBot:
             "entry_order_id": str(order.id),
             "qty": quantity,
             "score": score,
+            "setup_features": setup_features or {},
             "take_profit_price": take_profit_price,
             "stop_loss_price": stop_price,
             "protection": "bracket",
@@ -2597,12 +2784,20 @@ class AlpacaStockBot:
                 "entry_price": price,
                 "qty": quantity,
                 "score": score,
+                "setup_features": setup_features or {},
                 "entry_order_id": str(order.id),
             }
         )
         return True
 
-    def enter_option_position(self, ticker: str, score: float, underlying_price: float, direction: str) -> bool:
+    def enter_option_position(
+        self,
+        ticker: str,
+        score: float,
+        underlying_price: float,
+        direction: str,
+        setup_features: dict | None = None,
+    ) -> bool:
         if ticker in self.open_option_underlyings():
             logging.info("Skip %s %s: option already open for this underlying", ticker, direction)
             return False
@@ -2750,6 +2945,7 @@ class AlpacaStockBot:
             "entry_price": ask,
             "entry_date": datetime.now(NY_TZ).date().isoformat(),
             "score": score,
+            "setup_features": setup_features or {},
             "bucket": self.ticker_bucket(ticker),
             "contracts": contracts,
             "contract_multiplier": OPTION_CONTRACT_MULTIPLIER,
@@ -2785,6 +2981,7 @@ class AlpacaStockBot:
                 "strike": strike,
                 "dte_at_entry": dte,
                 "score": score,
+                "setup_features": setup_features or {},
                 "entry_order_id": str(order.id),
             }
         )
@@ -3061,6 +3258,7 @@ class AlpacaStockBot:
                         "underlying_entry_price": entry_underlying_price or None,
                         "underlying_exit_price": current_underlying_price,
                         "underlying_return_pct": underlying_return,
+                        "setup_features": entry.get("setup_features", {}),
                         "loss_diagnosis": self.option_loss_diagnosis(direction, underlying_return, bid, entry_price),
                         "reason": reason,
                         "exit_order_id": str(order.id),
