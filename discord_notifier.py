@@ -137,6 +137,28 @@ class DiscordNotifier:
             f"Order: `{order_id}`"
         )
 
+    def news_impact(self, alert: dict, mention_user_id: str = "") -> None:
+        now = datetime.now(NY_TZ).strftime("%Y-%m-%d %I:%M:%S %p ET")
+        mention = f"<@{mention_user_id}> " if mention_user_id else ""
+        tickers = ", ".join(f"`{ticker}`" for ticker in alert.get("tickers", [])[:10]) or "`SPY`"
+        bias = str(alert.get("bias", "watch")).upper()
+        marker = _direction_marker("call" if "bull" in bias.lower() else "put" if "bear" in bias.lower() else "")
+        headline = str(alert.get("headline", "News impact alert")).strip()
+        evidence = str(alert.get("evidence", "")).strip()
+        source = str(alert.get("source", "")).strip()
+        rule = str(alert.get("rule", "")).strip()
+        content = (
+            f"{mention}{marker} **News Impact Alert**\n"
+            f"{now}\n"
+            f"Bias: **{bias}** | Watch: {tickers}\n"
+            f"{headline[:240]}\n"
+        )
+        if evidence:
+            content += f"Read-through: {evidence[:420]}\n"
+        if rule or source:
+            content += f"Rule: `{rule or 'news'}` | Source: {source[:160]}"
+        self.send(content)
+
     @staticmethod
     def _post_json(url: str, payload: dict, token: str = "") -> None:
         headers = {

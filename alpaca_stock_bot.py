@@ -184,6 +184,9 @@ class StrategyConfig:
     insiderfinance_gex_cache_minutes: int = 20
     insiderfinance_gex_tickers: tuple[str, ...] = ("SPY", "QQQ", "IWM", "DIA")
     min_news_items_with_content: int = 10
+    news_impact_alerts_enabled: bool = True
+    news_impact_alert_cooldown_hours: int = 6
+    news_impact_mention_user_id: str = "1270486587402358784"
     macro_news_keywords: tuple[str, ...] = (
         "war",
         "invasion",
@@ -584,6 +587,12 @@ class AlpacaStockBot:
             "intraday_lookback_days": env_int("BOT_INTRADAY_LOOKBACK_DAYS", config.intraday_lookback_days, 1),
             "ml_quality_enabled": env_bool("BOT_ML_QUALITY_ENABLED", config.ml_quality_enabled),
             "min_ml_quality_samples": env_int("BOT_MIN_ML_QUALITY_SAMPLES", config.min_ml_quality_samples, 3),
+            "news_impact_alerts_enabled": env_bool(
+                "BOT_NEWS_IMPACT_ALERTS_ENABLED", config.news_impact_alerts_enabled
+            ),
+            "news_impact_alert_cooldown_hours": env_int(
+                "BOT_NEWS_IMPACT_ALERT_COOLDOWN_HOURS", config.news_impact_alert_cooldown_hours, 1
+            ),
             "option_max_hold_days": env_int("BOT_OPTION_MAX_HOLD_DAYS", config.option_max_hold_days, 1),
             "min_learning_trades_per_setup": env_int(
                 "BOT_MIN_LEARNING_TRADES_PER_SETUP", config.min_learning_trades_per_setup, 1
@@ -604,6 +613,9 @@ class AlpacaStockBot:
                 "BOT_MACRO_RELIEF_SCORE_BOOST", config.macro_relief_score_boost, 0.0
             ),
         }
+        mention_user = os.getenv("DISCORD_NEWS_MENTION_USER_ID") or os.getenv("DISCORD_MENTION_USER_ID")
+        if mention_user:
+            overrides["news_impact_mention_user_id"] = "".join(ch for ch in mention_user if ch.isdigit())
         if overrides["max_option_dte"] < overrides["min_option_dte"]:
             overrides["max_option_dte"] = overrides["min_option_dte"]
         logging.info(
@@ -1678,7 +1690,136 @@ class AlpacaStockBot:
             "lookback_hours": self.config.news_lookback_hours,
             "min_items_with_content": self.config.min_news_items_with_content,
         }
+        self.process_news_impact_alerts(news_by_symbol)
         return news_by_symbol
+
+    def process_news_impact_alerts(self, news_by_symbol: dict[str, list[dict[str, str]]]) -> None:
+        if not self.config.news_impact_alerts_enabled:
+            return
+        alerts = self.detect_news_impact_alerts(news_by_symbol)
+        self.state["last_news_impact_alerts"] = {
+            "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+            "count": len(alerts),
+            "alerts": alerts[:8],
+        }
+        for alert in alerts[:3]:
+            if self.news_impact_recently_sent(alert):
+                continue
+            self.notifier.news_impact(alert, self.config.news_impact_mention_user_id)
+            self.mark_news_impact_sent(alert)
+
+    def detect_news_impact_alerts(self, news_by_symbol: dict[str, list[dict[str, str]]]) -> list[dict]:
+        alerts = []
+        seen = set()
+        for symbol, items in news_by_symbol.items():
+            for item in items[:14]:
+                text = self.news_item_text(item)
+                lowered = text.lower()
+                for rule in self.news_impact_rules():
+                    if not all(term in lowered for term in rule["must"]):
+                        continue
+                    if rule.get("any") and not any(term in lowered for term in rule["any"]):
+                        continue
+                    if any(term in lowered for term in rule.get("exclude", ())):
+                        continue
+                    evidence = self.news_item_evidence(item, rule["must"][0], limit=220)
+                    key = (rule["name"], evidence[:120])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    alerts.append(
+                        {
+                            "rule": rule["name"],
+                            "bias": rule["bias"],
+                            "tickers": rule["tickers"],
+                            "headline": str(item.get("headline") or evidence or "News impact alert"),
+                            "evidence": evidence,
+                            "source": str(item.get("source_domain") or item.get("source") or item.get("url") or ""),
+                            "detected_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+                        }
+                    )
+        return alerts
+
+    @staticmethod
+    def news_impact_rules() -> list[dict]:
+        return [
+            {
+                "name": "trump_iran_deescalation",
+                "must": ("trump", "iran"),
+                "any": ("called off", "calls off", "cancel", "backed away", "ceasefire", "talks", "deal", "de-escalat"),
+                "exclude": ("attack launched", "strikes begin", "missile strike"),
+                "bias": "bullish risk-on",
+                "tickers": ["SPY", "QQQ", "TSLA", "NVDA", "AMD", "MSFT", "AAPL"],
+            },
+            {
+                "name": "trump_iran_escalation",
+                "must": ("trump", "iran"),
+                "any": ("strike", "attack", "missile", "war", "airstrike", "retaliation"),
+                "exclude": ("called off", "calls off", "cancel", "ceasefire", "deal"),
+                "bias": "bearish risk-off",
+                "tickers": ["SPY", "QQQ", "TSLA", "IWM"],
+            },
+            {
+                "name": "trump_tariff_pressure",
+                "must": ("trump", "tariff"),
+                "any": ("increase", "new tariff", "levy", "threat", "china", "imports"),
+                "exclude": ("delay", "pause", "exempt", "deal"),
+                "bias": "bearish trade-sensitive",
+                "tickers": ["SPY", "QQQ", "TSLA", "AAPL", "NVDA", "AMD", "F"],
+            },
+            {
+                "name": "trump_tariff_relief",
+                "must": ("trump", "tariff"),
+                "any": ("delay", "pause", "exempt", "deal", "agreement", "rollback"),
+                "exclude": (),
+                "bias": "bullish trade relief",
+                "tickers": ["SPY", "QQQ", "TSLA", "AAPL", "NVDA", "AMD", "F"],
+            },
+            {
+                "name": "ai_chip_policy",
+                "must": ("trump",),
+                "any": ("ai", "chip", "semiconductor", "nvidia", "export controls", "data center"),
+                "exclude": (),
+                "bias": "watch tech/semis",
+                "tickers": ["QQQ", "NVDA", "AMD", "AVGO", "MSFT", "AAPL", "SPY"],
+            },
+            {
+                "name": "tesla_musk_policy",
+                "must": ("trump",),
+                "any": ("tesla", "musk", "ev credit", "electric vehicle", "spacex"),
+                "exclude": (),
+                "bias": "watch TSLA",
+                "tickers": ["TSLA", "SPY", "QQQ"],
+            },
+        ]
+
+    def news_impact_recently_sent(self, alert: dict) -> bool:
+        sent = self.state.setdefault("news_impact_sent", {})
+        key = self.news_impact_key(alert)
+        raw = sent.get(key)
+        if not raw:
+            return False
+        try:
+            last = datetime.fromisoformat(raw)
+        except ValueError:
+            return False
+        return datetime.now(NY_TZ) - last < timedelta(hours=self.config.news_impact_alert_cooldown_hours)
+
+    def mark_news_impact_sent(self, alert: dict) -> None:
+        sent = self.state.setdefault("news_impact_sent", {})
+        sent[self.news_impact_key(alert)] = datetime.now(NY_TZ).isoformat(timespec="seconds")
+        cutoff = datetime.now(NY_TZ) - timedelta(days=7)
+        for key, raw in list(sent.items()):
+            try:
+                if datetime.fromisoformat(raw) < cutoff:
+                    sent.pop(key, None)
+            except ValueError:
+                sent.pop(key, None)
+
+    @staticmethod
+    def news_impact_key(alert: dict) -> str:
+        headline = re.sub(r"\W+", "-", str(alert.get("headline", "")).lower()).strip("-")[:80]
+        return f"{alert.get('rule', 'news')}:{headline}"
 
     def external_macro_rss_urls(self) -> list[str]:
         raw = os.getenv("EXTERNAL_MACRO_RSS_URLS", "").strip()
