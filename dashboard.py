@@ -619,6 +619,18 @@ PAGE = """
                 <td>{{ learning.risk_multiplier }}</td>
               </tr>
               <tr>
+                <th>Win Rate</th>
+                <td>{{ learning.win_rate }}</td>
+              </tr>
+              <tr>
+                <th>Profit Factor</th>
+                <td>{{ learning.profit_factor }}</td>
+              </tr>
+              <tr>
+                <th>Downside Score</th>
+                <td>{{ learning.downside_adjusted_return }}</td>
+              </tr>
+              <tr>
                 <th>Score Adjustments</th>
                 <td>{{ learning.adjustment_count }}</td>
               </tr>
@@ -1217,12 +1229,28 @@ def build_snapshot() -> dict:
     learning_raw = state.get("learning") or {}
     trade_history = state.get("trade_history") or {}
     score_adjustments = learning_raw.get("score_adjustments") or {}
+    learning_stats = learning_raw.get("stats") or {}
     learning = {
         "updated_at": learning_raw.get("updated_at", ""),
         "closed_trade_count": learning_raw.get("closed_trade_count", 0),
         "opened_trade_count": len(trade_history.get("opened_trades") or []),
         "risk_multiplier": f"{float(learning_raw.get('risk_multiplier', 1.0)):.2f}x",
         "adjustment_count": len(score_adjustments),
+        "win_rate": (
+            f"{float(learning_stats.get('win_rate')):.0%}"
+            if learning_stats.get("win_rate") is not None
+            else "needs sample"
+        ),
+        "profit_factor": (
+            f"{float(learning_stats.get('profit_factor')):.2f}"
+            if learning_stats.get("profit_factor") is not None
+            else "needs sample"
+        ),
+        "downside_adjusted_return": (
+            f"{float(learning_stats.get('downside_adjusted_return')):.2f}"
+            if learning_stats.get("downside_adjusted_return") is not None
+            else "needs sample"
+        ),
     }
     learning_adjustments = [
         f"{key}: {value:+.3f}" for key, value in sorted(score_adjustments.items(), key=lambda item: abs(float(item[1])), reverse=True)[:8]

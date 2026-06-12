@@ -3237,9 +3237,19 @@ class AlpacaStockBot:
             min_sample = self.config.min_learning_trades_broad if is_broad_key else self.config.min_learning_trades_per_setup
             if len(recent) < min_sample:
                 continue
-            avg_return = sum(float(trade.get("return_pct", 0.0)) for trade in recent) / len(recent)
-            win_rate = sum(1 for trade in recent if float(trade.get("pnl", 0.0)) > 0) / len(recent)
-            adjustment = (avg_return * 0.25) + ((win_rate - 0.5) * 0.03)
+            returns = [float(trade.get("return_pct", 0.0) or 0.0) for trade in recent]
+            pnls = [float(trade.get("pnl", 0.0) or 0.0) for trade in recent]
+            avg_return = sum(returns) / len(returns)
+            downside_returns = [value for value in returns if value < 0]
+            downside_drag = abs(sum(downside_returns) / len(downside_returns)) if downside_returns else 0.0
+            win_rate = sum(1 for pnl in pnls if pnl > 0) / len(pnls)
+            gross_profit = sum(pnl for pnl in pnls if pnl > 0)
+            gross_loss = abs(sum(pnl for pnl in pnls if pnl <= 0))
+            profit_factor = gross_profit / gross_loss if gross_loss else 99.0
+            reward_quality = avg_return - (downside_drag * 0.65)
+            adjustment = (reward_quality * 0.30) + ((win_rate - 0.5) * 0.03)
+            if profit_factor < 1.0:
+                adjustment -= min(0.025, (1.0 - profit_factor) * 0.02)
             if any(str(trade.get("loss_diagnosis", "")) == "direction_wrong" for trade in recent[-3:]):
                 adjustment -= 0.01
             limit = 0.04 if is_broad_key else 0.08
@@ -3260,6 +3270,11 @@ class AlpacaStockBot:
             losses = [trade for trade in recent_all if float(trade.get("pnl", 0.0)) <= 0]
             gross_profit = sum(float(trade.get("pnl", 0.0)) for trade in wins)
             gross_loss = abs(sum(float(trade.get("pnl", 0.0)) for trade in losses))
+            returns = [float(trade.get("return_pct", 0.0) or 0.0) for trade in recent_all]
+            avg_return = sum(returns) / len(returns)
+            downside_returns = [value for value in returns if value < 0]
+            downside_deviation = math.sqrt(sum(value * value for value in downside_returns) / len(recent_all))
+            downside_adjusted_return = avg_return / downside_deviation if downside_deviation else (99.0 if avg_return > 0 else 0.0)
             win_rate = len(wins) / len(recent_all)
             profit_factor = gross_profit / gross_loss if gross_loss else 99.0
             consecutive_losses = 0
@@ -3274,11 +3289,13 @@ class AlpacaStockBot:
                 "losses": len(losses),
                 "win_rate": round(win_rate, 4),
                 "profit_factor": round(profit_factor, 4),
+                "avg_return": round(avg_return, 4),
+                "downside_adjusted_return": round(downside_adjusted_return, 4),
                 "consecutive_losses": consecutive_losses,
             }
-            if consecutive_losses >= 3 or win_rate < 0.35 or profit_factor < 0.75:
+            if consecutive_losses >= 3 or win_rate < 0.35 or profit_factor < 0.75 or downside_adjusted_return < -0.25:
                 risk_multiplier = 0.5
-            elif win_rate < 0.45 or profit_factor < 1.0:
+            elif win_rate < 0.45 or profit_factor < 1.0 or downside_adjusted_return < 0:
                 risk_multiplier = 0.7
 
         learning["score_adjustments"] = adjustments

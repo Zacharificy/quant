@@ -12,6 +12,7 @@ This project is a standalone Alpaca Paper trading console with a local/Railway d
 - Sizing: options are sized as contracts, where `1 contract = 100 shares`
 - Entry: daily 50/200 EMA uptrend, 20-day high breakout, and RSI confirmation
 - Exits: option profit target, stop loss, time stop, or Alpaca bracket protection when accepted
+- Learning: closed trades now adjust future scores with win rate, profit factor, and downside-adjusted return so one lucky winner does not hide repeated bad losses
 - Cooldown: 7 calendar days after closing the same ticker
 - Orders: Alpaca Paper orders only
 - Options: long-only calls/puts, limit orders, no naked short options
