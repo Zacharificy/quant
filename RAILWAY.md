@@ -30,6 +30,7 @@ DISCORD_TRADE_WEBHOOK_URL=optional_webhook_for_trade_alerts
 BOT_NEWS_IMPACT_ALERTS_ENABLED=true
 DISCORD_NEWS_MENTION_USER_ID=1270486587402358784
 EXTERNAL_MACRO_RSS_URLS=https://trumpstruth.org/feed,https://www.federalreserve.gov/feeds/press_all.xml
+BOT_TRUTH_MONITOR_FETCH_LIMIT=40
 ```
 
 Do not commit your real `.env` file or Alpaca keys to GitHub.

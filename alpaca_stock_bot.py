@@ -2061,7 +2061,7 @@ class AlpacaStockBot:
         alerts = []
         seen = set()
         for symbol, items in news_by_symbol.items():
-            for item in items[:14]:
+            for item in items[:40]:
                 source_domain = str(item.get("source_domain") or item.get("source") or item.get("url") or "").lower()
                 source_type = str(item.get("source_type") or "").lower()
                 trusted_macro_source = (
@@ -2105,7 +2105,21 @@ class AlpacaStockBot:
                         "detected_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
                     }
                 )
+        alerts.sort(key=self.news_impact_priority, reverse=True)
         return alerts
+
+    @staticmethod
+    def news_impact_priority(alert: dict) -> float:
+        event_weights = {
+            "iran_geopolitics": 0.25,
+            "fed_rates": 0.20,
+            "tariffs_trade": 0.18,
+            "ai_chips": 0.14,
+            "tesla_musk": 0.12,
+            "counterterror_security": -0.08,
+        }
+        event = str(alert.get("rule") or "")
+        return float(alert.get("confidence") or 0.0) + event_weights.get(event, 0.0)
 
     def analyze_market_news_impact(self, text: str) -> dict | None:
         """Read trusted macro/news body text and infer likely near-term market impact.
@@ -2126,6 +2140,9 @@ class AlpacaStockBot:
             return None
         bullish_score = self.phrase_score(lowered, profile["bullish"])
         bearish_score = self.phrase_score(lowered, profile["bearish"])
+        if event == "iran_geopolitics" and self.is_iran_deescalation_text(lowered):
+            bullish_score += 3.5
+            bearish_score = max(0.0, bearish_score - 3.0)
         modifier_score = self.phrase_score(lowered, profile.get("modifiers", ()))
         net = bullish_score - bearish_score
         if abs(net) < 1.0:
@@ -2149,6 +2166,25 @@ class AlpacaStockBot:
 
     def analyze_truth_social_market_impact(self, text: str) -> dict | None:
         return self.analyze_market_news_impact(text)
+
+    @staticmethod
+    def is_iran_deescalation_text(text: str) -> bool:
+        deescalation_patterns = (
+            "cancelled the scheduled strikes",
+            "canceled the scheduled strikes",
+            "cancelled scheduled strikes",
+            "canceled scheduled strikes",
+            "cancelled the scheduled strikes and bombings",
+            "canceled the scheduled strikes and bombings",
+            "cancelled the bombings",
+            "canceled the bombings",
+            "peace deal",
+            "ceasefire",
+            "finalized peace",
+            "signing of the peace",
+            "brought to the highest level of iranian leadership and approved",
+        )
+        return "iran" in text and any(pattern in text for pattern in deescalation_patterns)
 
     @staticmethod
     def is_alert_worthy_market_news(text: str, profile: dict) -> bool:
@@ -2292,8 +2328,41 @@ class AlpacaStockBot:
                 "down_tickers": ["SPY", "IWM", "QQQ"],
             },
             "iran_geopolitics": {
-                "event_terms": ("iran", "israel", "missile", "strike", "war", "ceasefire", "hormuz", "oil"),
-                "bullish": ("called off", "calls off", "cancel", "backed away", "stand down", "ceasefire", "peace", "deal", "talks", "de-escalat", "no attack", "will not attack"),
+                "event_terms": (
+                    "iran",
+                    "israel",
+                    "missile",
+                    "strike",
+                    "strikes",
+                    "bombing",
+                    "bombings",
+                    "war",
+                    "ceasefire",
+                    "hormuz",
+                    "oil",
+                    "islamic republic",
+                    "naval blockade",
+                ),
+                "bullish": (
+                    "called off",
+                    "calls off",
+                    "cancel",
+                    "cancelled",
+                    "canceled",
+                    "approved by all parties",
+                    "backed away",
+                    "stand down",
+                    "ceasefire",
+                    "peace",
+                    "deal",
+                    "talks",
+                    "de-escalat",
+                    "no attack",
+                    "will not attack",
+                    "signing",
+                    "finalized",
+                    "finalised",
+                ),
                 "bearish": ("attack", "strike", "airstrike", "missile", "retaliation", "war", "bomb", "hormuz closed", "sanction"),
                 "modifiers": ("market", "stocks", "oil", "energy", "futures", "nasdaq", "s&p"),
                 "up_tickers": ["SPY", "QQQ", "TSLA", "NVDA", "AMD", "MSFT", "AAPL"],
