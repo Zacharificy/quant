@@ -197,6 +197,7 @@ class StrategyConfig:
     news_impact_max_alerts_per_scan: int = 1
     news_impact_max_tickers: int = 4
     news_impact_mention_user_id: str = "1270486587402358784"
+    news_impact_max_item_age_hours: int = 48
     truth_monitor_max_post_age_minutes: int = 45
     macro_news_keywords: tuple[str, ...] = (
         "war",
@@ -640,6 +641,9 @@ class AlpacaStockBot:
             ),
             "news_impact_max_tickers": env_int(
                 "BOT_NEWS_IMPACT_MAX_TICKERS", config.news_impact_max_tickers, 1
+            ),
+            "news_impact_max_item_age_hours": env_int(
+                "BOT_NEWS_IMPACT_MAX_ITEM_AGE_HOURS", config.news_impact_max_item_age_hours, 1
             ),
             "truth_monitor_max_post_age_minutes": env_int(
                 "BOT_TRUTH_MONITOR_MAX_POST_AGE_MINUTES", config.truth_monitor_max_post_age_minutes, 1
@@ -2078,6 +2082,8 @@ class AlpacaStockBot:
                 )
                 if not trusted_macro_source:
                     continue
+                if not self.is_recent_news_item(item):
+                    continue
                 text = self.news_item_text(item)
                 analysis = self.analyze_market_news_impact(text)
                 if not analysis:
@@ -2173,6 +2179,13 @@ class AlpacaStockBot:
     def analyze_truth_social_market_impact(self, text: str) -> dict | None:
         return self.analyze_market_news_impact(text)
 
+    def is_recent_news_item(self, item: dict) -> bool:
+        created = self.parse_news_datetime(str(item.get("created_at") or ""))
+        if created is None:
+            return False
+        age = datetime.now(NY_TZ) - created.astimezone(NY_TZ)
+        return timedelta(0) <= age <= timedelta(hours=max(1, self.config.news_impact_max_item_age_hours))
+
     @staticmethod
     def is_iran_deescalation_text(text: str) -> bool:
         deescalation_patterns = (
@@ -2263,20 +2276,32 @@ class AlpacaStockBot:
             "venezuela",
             "safe haven",
         )
-        has_hard_market_term = any(term in lowered for term in hard_market_terms)
-        if any(term in lowered for term in fluff_terms) and not has_hard_market_term:
+        has_hard_market_term = any(AlpacaStockBot.phrase_matches(lowered, term) for term in hard_market_terms)
+        if any(AlpacaStockBot.phrase_matches(lowered, term) for term in fluff_terms) and not has_hard_market_term:
             return False
-        has_event = any(term in lowered for term in profile.get("event_terms", ()))
-        has_direction = any(term in lowered for term in profile.get("bullish", ())) or any(
-            term in lowered for term in profile.get("bearish", ())
+        has_event = any(AlpacaStockBot.phrase_matches(lowered, term) for term in profile.get("event_terms", ()))
+        has_direction = any(AlpacaStockBot.phrase_matches(lowered, term) for term in profile.get("bullish", ())) or any(
+            AlpacaStockBot.phrase_matches(lowered, term) for term in profile.get("bearish", ())
         )
         return bool(has_event and has_direction and has_hard_market_term)
+
+    @staticmethod
+    def phrase_matches(text: str, phrase: str) -> bool:
+        phrase = str(phrase or "").strip().lower()
+        if not phrase:
+            return False
+        if re.fullmatch(r"[a-z0-9]+", phrase):
+            return bool(re.search(rf"\b{re.escape(phrase)}\b", text))
+        if " " in phrase:
+            parts = [re.escape(part) for part in phrase.split()]
+            return bool(re.search(r"(?<![a-z0-9])" + r"\s+".join(parts) + r"(?![a-z0-9])", text))
+        return phrase in text
 
     @staticmethod
     def phrase_score(text: str, phrases: tuple[str, ...]) -> float:
         score = 0.0
         for phrase in phrases:
-            if phrase in text:
+            if AlpacaStockBot.phrase_matches(text, phrase):
                 score += 1.5 if " " in phrase else 1.0
         return score
 
