@@ -183,7 +183,9 @@ class DiscordNotifier:
         marker = _direction_marker("call" if direction == "up" or "bull" in bias.lower() else "put" if direction == "down" or "bear" in bias.lower() else "")
         headline = str(alert.get("headline", "News impact alert")).strip()
         evidence = str(alert.get("evidence", "")).strip()
-        news = evidence or headline
+        news = str(alert.get("news_text") or evidence or headline).strip()
+        reasoning = str(alert.get("reasoning", "")).strip()
+        source = str(alert.get("source", "")).strip()
         content = (
             f"{mention}{marker} **Market News**\n"
             f"{now}\n"
@@ -191,6 +193,10 @@ class DiscordNotifier:
             f"Direction: **{direction_label}**\n"
             f"News: {news}"
         )
+        if reasoning:
+            content += f"\nWhy: {reasoning}"
+        if source:
+            content += f"\nSource: {source}"
         self.send_chunks(content)
 
     @staticmethod

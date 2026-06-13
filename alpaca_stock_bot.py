@@ -1950,6 +1950,7 @@ class AlpacaStockBot:
                         "tickers": tickers,
                         "headline": str(item.get("headline") or evidence or "Truth Social market impact"),
                         "evidence": evidence,
+                        "news_text": self.news_item_evidence(item, "news", limit=1600),
                         "reasoning": analysis["reasoning"],
                         "gex": self.news_impact_gex_summary(tickers),
                         "source": str(item.get("source_domain") or item.get("source") or item.get("url") or ""),
@@ -1983,6 +1984,7 @@ class AlpacaStockBot:
             return None
         direction = "up" if net > 0 else "down"
         confidence = min(0.95, 0.45 + (min(abs(net), 5.0) * 0.08) + min(event_score, 3.0) * 0.04 + modifier_score * 0.02)
+        confidence = min(confidence, float(profile.get("max_confidence", 0.95)))
         if confidence < 0.58:
             return None
         tickers = profile["up_tickers"] if direction == "up" else profile["down_tickers"]
@@ -2055,6 +2057,13 @@ class AlpacaStockBot:
             "chip",
             "chips",
             "ev credit",
+            "cartel",
+            "narcoterrorist",
+            "terrorist organization",
+            "tren de aragua",
+            "southern command",
+            "venezuela",
+            "safe haven",
         )
         has_hard_market_term = any(term in lowered for term in hard_market_terms)
         if any(term in lowered for term in fluff_terms) and not has_hard_market_term:
@@ -2076,7 +2085,14 @@ class AlpacaStockBot:
     def truth_event_scores(self, text: str) -> dict[str, float]:
         profiles = {
             name: self.truth_event_profile(name)
-            for name in ("iran_geopolitics", "tariffs_trade", "ai_chips", "tesla_musk", "fed_rates")
+            for name in (
+                "counterterror_security",
+                "iran_geopolitics",
+                "tariffs_trade",
+                "ai_chips",
+                "tesla_musk",
+                "fed_rates",
+            )
         }
         scores = {}
         for name, profile in profiles.items():
@@ -2088,6 +2104,45 @@ class AlpacaStockBot:
     @staticmethod
     def truth_event_profile(event: str) -> dict:
         profiles = {
+            "counterterror_security": {
+                "event_terms": (
+                    "cartel",
+                    "narcoterrorist",
+                    "terrorist organization",
+                    "tren de aragua",
+                    "southern command",
+                    "venezuela",
+                    "gang",
+                    "criminal",
+                    "kinetic strike",
+                ),
+                "bullish": (
+                    "successfully",
+                    "execute",
+                    "executed",
+                    "eliminate",
+                    "eliminated",
+                    "killed",
+                    "no longer have safe haven",
+                    "coordinated",
+                    "working very well",
+                    "retribution",
+                ),
+                "bearish": (
+                    "retaliation",
+                    "escalation",
+                    "war with venezuela",
+                    "sanction",
+                    "oil disruption",
+                    "civilian casualties",
+                    "condemn",
+                    "failed",
+                ),
+                "modifiers": ("security", "border", "venezuela", "southern command", "terrorist organization", "cartel"),
+                "max_confidence": 0.72,
+                "up_tickers": ["SPY", "IWM", "DIA"],
+                "down_tickers": ["SPY", "IWM", "QQQ"],
+            },
             "iran_geopolitics": {
                 "event_terms": ("iran", "israel", "missile", "strike", "war", "ceasefire", "hormuz", "oil"),
                 "bullish": ("called off", "calls off", "cancel", "backed away", "stand down", "ceasefire", "peace", "deal", "talks", "de-escalat", "no attack", "will not attack"),
