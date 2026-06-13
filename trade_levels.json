@@ -2,58 +2,62 @@
   "symbols": {
     "SPY": {
       "bearish_below": [
-        740.11
+        740
       ],
       "breakdown_below": [
-        727
+        740
       ],
       "breakdown_target": [
-        716.06
+        735.57,
+        732.28
       ],
       "bullish_above": [
-        740.11,
-        743.8,
-        748.21
+        744.09
+      ],
+      "bullish_target": [
+        747.5
       ],
       "confirmation": [
-        740.11,
-        743.8,
-        748.21,
-        750
+        744.09
       ],
+      "confirmation_timeframe": "30m",
       "failure": [
-        733,
-        730,
-        727,
+        740,
+        735.57,
+        732.28,
         716.06
       ],
       "gex": [
         716.06,
-        727,
-        730,
-        733,
-        740.11,
-        743.8,
-        748.21,
-        750
+        728.61,
+        732.28,
+        735.57,
+        740.09,
+        744.09,
+        747.5
       ],
       "insiderfinance_weight": "context_only",
-      "manual_weight": "primary",
-      "notes": "Chart first. Puts under 740.11/premium reject. 733 revisit/failure, 730 max support, 727 GEX put wall/micro remelt; below 727 risks breakdown into 716.06 demand. Above 740.11 then 743.80/748.21/750 supports bullish retest path. InsiderFinance/GEX is context only.",
-      "resistance": [
-        740.11,
-        743.8,
-        748.21,
-        750,
-        754.62,
-        755.33,
-        760.85
+      "kill_zone": [
+        740.09,
+        744.09
       ],
+      "kill_zone_profit_target_pct": 0.14,
+      "kill_zone_stop_loss_pct": 0.06,
+      "manual_weight": "primary",
+      "notes": "Chart first. 740.09-744.09 is a chop/kill zone: scalp only with tighter exits until a 30m candle confirms. Calls need 30m close above 744.09, then 747.50 target/resistance. Puts need red 30m close under 740 without reclaim, then 735.57 micro support and 732.28 max support. Prefer near-money/ITM short-dated contracts; OTM only for violent moves or further DTE. InsiderFinance/GEX is context only.",
+      "otm_requires_violent_move": true,
+      "prefer_itm_short_dte": true,
+      "resistance": [
+        744.09,
+        747.5
+      ],
+      "short_dte_max": 2,
       "support": [
-        727,
-        730,
-        733,
-        737.05
+        740.09,
+        735.57,
+        732.28,
+        728.61,
+        716.06
       ],
       "tolerance": 1.25
     }

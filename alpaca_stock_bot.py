@@ -1171,9 +1171,12 @@ class AlpacaStockBot:
                 "held_days": (today - entry_date).days,
                 "strike": entry.get("strike") or ((parsed or {}).get("strike")),
                 "dte_at_entry": entry.get("dte_at_entry"),
+                "profit_target_pct": entry.get("profit_target_pct"),
+                "stop_loss_pct": entry.get("stop_loss_pct"),
                 "take_profit_price": entry.get("take_profit_price"),
                 "stop_loss_price": entry.get("stop_loss_price"),
                 "underlying_target_price": entry.get("underlying_target_price"),
+                "exit_profile": entry.get("exit_profile"),
                 "setup_features": entry.get("setup_features", {}),
                 "reason": "broker closed or expired",
                 "exit_order_id": entry.get("exit_order_id", "not found"),
@@ -1212,6 +1215,8 @@ class AlpacaStockBot:
             "underlying_price_at_entry": underlying_price,
             "strike": strike,
             "dte_at_entry": dte,
+            "profit_target_pct": self.config.option_profit_target_pct,
+            "stop_loss_pct": self.config.option_stop_loss_pct,
             "take_profit_price": take_profit_price,
             "stop_loss_price": stop_loss_price,
             "underlying_target_price": self.option_underlying_target(direction, underlying_price, strike),
@@ -1242,13 +1247,14 @@ class AlpacaStockBot:
                 continue
             if entry_price <= 0:
                 continue
-            entry["take_profit_price"] = round_price(entry_price * (1 + self.config.option_profit_target_pct))
-            entry["stop_loss_price"] = round_price(entry_price * (1 - self.config.option_stop_loss_pct))
-            entry["exit_profile"] = (
-                f"tp{self.config.option_profit_target_pct:.0%}_"
-                f"sl{self.config.option_stop_loss_pct:.0%}_"
-                f"rr{self.config.option_profit_target_pct / self.config.option_stop_loss_pct:.1f}"
-            )
+            profit_pct, stop_pct = self.option_exit_percents(entry)
+            entry["profit_target_pct"] = profit_pct
+            entry["stop_loss_pct"] = stop_pct
+            entry["take_profit_price"] = round_price(entry_price * (1 + profit_pct))
+            entry["stop_loss_price"] = round_price(entry_price * (1 - stop_pct))
+            entry["exit_profile_summary"] = f"tp{profit_pct:.0%}_sl{stop_pct:.0%}_rr{profit_pct / stop_pct:.1f}"
+            if not entry.get("exit_profile"):
+                entry["exit_profile"] = entry["exit_profile_summary"]
 
     @staticmethod
     def ticker_bucket(ticker: str) -> str:
@@ -1271,6 +1277,84 @@ class AlpacaStockBot:
             except (TypeError, ValueError):
                 continue
         return values
+
+    def latest_intraday_close(self, ticker: str, intraday_bars: dict[str, dict[str, pd.DataFrame]] | None) -> float | None:
+        if not intraday_bars:
+            return None
+        for label in ("5m", "15m", "30m", "1h"):
+            frame = (intraday_bars.get(label) or {}).get(ticker)
+            if frame is None or frame.empty:
+                continue
+            value = frame.iloc[-1].get("close")
+            if pd.isna(value):
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def latest_candle_values(self, frame: pd.DataFrame | None) -> dict[str, float] | None:
+        if frame is None or frame.empty:
+            return None
+        for index in range(len(frame) - 1, -1, -1):
+            row = frame.iloc[index]
+            try:
+                opened = float(row.get("open"))
+                high = float(row.get("high"))
+                low = float(row.get("low"))
+                close = float(row.get("close"))
+            except (TypeError, ValueError):
+                continue
+            if any(pd.isna(value) for value in (opened, high, low, close)):
+                continue
+            return {"open": opened, "high": high, "low": low, "close": close}
+        return None
+
+    def kill_zone_confirmation(
+        self,
+        frame: pd.DataFrame | None,
+        lower: float,
+        upper: float,
+        tolerance: float,
+    ) -> tuple[str | None, str | None]:
+        candle = self.latest_candle_values(frame)
+        if not candle:
+            return None, None
+        opened = candle["open"]
+        close = candle["close"]
+        red_close_buffer = min(max(tolerance * 0.20, 0.05), 0.35)
+        if close > upper and close >= opened:
+            return "call", f"30m candle closed above kill-zone resistance {upper:g}"
+        if close < lower - red_close_buffer and close <= opened:
+            return "put", f"30m red candle closed below kill-zone support {lower:g}"
+        return None, None
+
+    @staticmethod
+    def bounded_pct(value, default: float, low: float, high: float) -> float:
+        try:
+            pct = float(value)
+        except (TypeError, ValueError):
+            pct = default
+        if not math.isfinite(pct):
+            pct = default
+        return max(low, min(high, pct))
+
+    def option_exit_percents(self, entry: dict | None = None) -> tuple[float, float]:
+        entry = entry or {}
+        profit_pct = self.bounded_pct(
+            entry.get("profit_target_pct"),
+            self.config.option_profit_target_pct,
+            0.01,
+            2.0,
+        )
+        stop_pct = self.bounded_pct(
+            entry.get("stop_loss_pct"),
+            self.config.option_stop_loss_pct,
+            0.01,
+            0.95,
+        )
+        return profit_pct, stop_pct
 
     @staticmethod
     def parse_money_value(value: str, suffix: str = "") -> float | None:
@@ -1377,7 +1461,14 @@ class AlpacaStockBot:
         }
         return results
 
-    def chart_level_report(self, ticker: str, price: float, direction: str | None, atr: float | None = None) -> dict:
+    def chart_level_report(
+        self,
+        ticker: str,
+        price: float,
+        direction: str | None,
+        atr: float | None = None,
+        intraday_frame: pd.DataFrame | None = None,
+    ) -> dict:
         manual_levels = read_trade_levels().get("symbols", {}).get(ticker.upper(), {})
         insider_gex = self.fetch_insiderfinance_gex(ticker)
         levels = dict(manual_levels or {})
@@ -1401,8 +1492,50 @@ class AlpacaStockBot:
         bearish_below = self.parse_float_list(levels.get("bearish_below"))
         bullish_above = self.parse_float_list(levels.get("bullish_above"))
         breakdown_below = self.parse_float_list(levels.get("breakdown_below"))
+        breakdown_targets = self.parse_float_list(levels.get("breakdown_target"))
+        bullish_targets = self.parse_float_list(levels.get("bullish_target"))
+        kill_zone = self.parse_float_list(levels.get("kill_zone"))
         reasons = []
         adjustment = 0.0
+        exit_profile: dict[str, object] = {}
+        underlying_target_override = None
+
+        if len(kill_zone) >= 2:
+            kill_low = min(kill_zone[:2])
+            kill_high = max(kill_zone[:2])
+            in_kill_zone = kill_low <= price <= kill_high
+            confirmed_direction, confirmation_reason = self.kill_zone_confirmation(
+                intraday_frame,
+                kill_low,
+                kill_high,
+                tolerance,
+            )
+            if in_kill_zone:
+                adjustment -= 0.05
+                reasons.append(f"inside kill zone {kill_low:g}-{kill_high:g}; scalp only")
+                exit_profile = {
+                    "mode": "kill_zone_scalp",
+                    "profit_target_pct": self.bounded_pct(levels.get("kill_zone_profit_target_pct"), 0.14, 0.05, 0.50),
+                    "stop_loss_pct": self.bounded_pct(levels.get("kill_zone_stop_loss_pct"), 0.06, 0.03, 0.30),
+                    "reason": f"manual SPY kill zone {kill_low:g}-{kill_high:g}",
+                }
+            if confirmation_reason:
+                if confirmed_direction == direction:
+                    adjustment += 0.06
+                    reasons.append(confirmation_reason)
+                    if direction == "call" and bullish_targets:
+                        above_targets = [level for level in bullish_targets if level > price]
+                        if above_targets:
+                            underlying_target_override = min(above_targets)
+                    elif direction == "put" and breakdown_targets:
+                        below_targets = [level for level in breakdown_targets if level < price]
+                        if below_targets:
+                            underlying_target_override = max(below_targets)
+                elif direction in {"call", "put"}:
+                    adjustment -= 0.04
+                    reasons.append(f"30m confirmation favors {confirmed_direction}")
+            elif in_kill_zone and direction in {"call", "put"}:
+                reasons.append("waiting for 30m close outside kill zone")
         if insider_gex and insider_gex.get("status") == "ok":
             zero_gamma = insider_gex.get("zero_gamma")
             put_wall = insider_gex.get("put_wall")
@@ -1499,6 +1632,8 @@ class AlpacaStockBot:
             "reasons": reasons[:4],
             "levels": levels,
             "insiderfinance": insider_gex,
+            "exit_profile": exit_profile,
+            "underlying_target_price": underlying_target_override,
         }
 
     def pretrade_research_path(self) -> Path:
@@ -1676,6 +1811,7 @@ class AlpacaStockBot:
         specs = {
             "5m": TimeFrame(5, TimeFrameUnit.Minute),
             "15m": TimeFrame(15, TimeFrameUnit.Minute),
+            "30m": TimeFrame(30, TimeFrameUnit.Minute),
             "1h": TimeFrame(1, TimeFrameUnit.Hour),
         }
         result: dict[str, dict[str, pd.DataFrame]] = {}
@@ -2901,11 +3037,18 @@ class AlpacaStockBot:
                     "reasons": risk_reasons,
                 }
                 continue
-            latest_price = float(df.iloc[-1]["close"])
+            latest_price = self.latest_intraday_close(ticker, intraday_bars or {}) or float(df.iloc[-1]["close"])
             latest_atr = float(df.iloc[-1].get("atr_14", 0.0) or 0.0)
-            level_report = self.chart_level_report(ticker, latest_price, direction, latest_atr)
+            intraday_30m = ((intraday_bars or {}).get("30m") or {}).get(ticker)
+            level_report = self.chart_level_report(ticker, latest_price, direction, latest_atr, intraday_30m)
             if level_report["status"] == "ok":
                 score = max(0.0, min(1.0, score + float(level_report["score_adjustment"])))
+                if level_report.get("exit_profile"):
+                    features["level_exit_profile"] = level_report["exit_profile"]
+                if level_report.get("underlying_target_price"):
+                    features["level_underlying_target_price"] = level_report["underlying_target_price"]
+                if level_report.get("reasons"):
+                    features["level_reasons"] = level_report.get("reasons", [])
             score, research_reasons = self.apply_pretrade_research_score(ticker, direction, score, [])
             if research_reasons:
                 option_scan["candidates"][ticker] = {
@@ -3000,7 +3143,7 @@ class AlpacaStockBot:
                     "long_index": bool(ticker in {"SPY", "QQQ", "IWM", "DIA"} and direction == "call"),
                 }
             )
-        for label in ("5m", "15m", "1h"):
+        for label in ("5m", "15m", "30m", "1h"):
             frame = (intraday_bars.get(label) or {}).get(ticker)
             if frame is None or len(frame) < 25:
                 features[f"{label}_ready"] = False
@@ -3060,6 +3203,7 @@ class AlpacaStockBot:
             "long_index",
             "5m_trend",
             "15m_trend",
+            "30m_trend",
             "1h_trend",
             "15m_volume",
         )
@@ -3915,13 +4059,28 @@ class AlpacaStockBot:
             }
             return False
 
-        take_profit_price = round_price(ask * (1 + self.config.option_profit_target_pct))
-        stop_loss_price = round_price(ask * (1 - self.config.option_stop_loss_pct))
-        underlying_target_price = self.option_underlying_target(direction, underlying_price, strike)
-        if self.config.option_stop_loss_pct <= 0:
+        level_exit_profile = (setup_features or {}).get("level_exit_profile") or {}
+        profit_target_pct = self.bounded_pct(
+            level_exit_profile.get("profit_target_pct") if isinstance(level_exit_profile, dict) else None,
+            self.config.option_profit_target_pct,
+            0.01,
+            2.0,
+        )
+        stop_loss_pct = self.bounded_pct(
+            level_exit_profile.get("stop_loss_pct") if isinstance(level_exit_profile, dict) else None,
+            self.config.option_stop_loss_pct,
+            0.01,
+            0.95,
+        )
+        take_profit_price = round_price(ask * (1 + profit_target_pct))
+        stop_loss_price = round_price(ask * (1 - stop_loss_pct))
+        underlying_target_price = (setup_features or {}).get("level_underlying_target_price") or self.option_underlying_target(
+            direction, underlying_price, strike
+        )
+        if stop_loss_pct <= 0:
             logging.warning("Skip %s: option stop loss percent must be positive", contract.symbol)
             return False
-        reward_risk = self.config.option_profit_target_pct / self.config.option_stop_loss_pct
+        reward_risk = profit_target_pct / stop_loss_pct
         if reward_risk < self.config.min_reward_risk_ratio:
             logging.warning(
                 "Skip %s: option reward/risk %.2f is below %.2f",
@@ -3965,9 +4124,13 @@ class AlpacaStockBot:
             "strike": strike,
             "dte_at_entry": dte,
             "entry_order_id": str(order.id),
+            "profit_target_pct": profit_target_pct,
+            "stop_loss_pct": stop_loss_pct,
             "take_profit_price": take_profit_price,
             "stop_loss_price": stop_loss_price,
             "underlying_target_price": underlying_target_price,
+            "exit_profile": (level_exit_profile or {}).get("mode") if isinstance(level_exit_profile, dict) else None,
+            "exit_profile_reason": (level_exit_profile or {}).get("reason") if isinstance(level_exit_profile, dict) else None,
             "protection": protection,
         }
         self.record_entry(
@@ -3987,9 +4150,12 @@ class AlpacaStockBot:
                 "entry_greeks": model_snapshot,
                 "strike": strike,
                 "dte_at_entry": dte,
+                "profit_target_pct": profit_target_pct,
+                "stop_loss_pct": stop_loss_pct,
                 "take_profit_price": take_profit_price,
                 "stop_loss_price": stop_loss_price,
                 "underlying_target_price": underlying_target_price,
+                "exit_profile": (level_exit_profile or {}).get("mode") if isinstance(level_exit_profile, dict) else None,
                 "score": score,
                 "setup_features": setup_features or {},
                 "entry_order_id": str(order.id),
@@ -4135,6 +4301,14 @@ class AlpacaStockBot:
         choices = []
         realized_vol = self.realized_volatility(ticker)
         direction = "call" if contract_type == ContractType.CALL else "put"
+        manual_levels = read_trade_levels().get("symbols", {}).get(ticker.upper(), {})
+        prefer_near_money = ticker.upper() in {"SPY", "QQQ", "IWM", "DIA"} or bool(
+            manual_levels.get("prefer_itm_short_dte")
+        )
+        try:
+            short_dte_max = int(float(manual_levels.get("short_dte_max", 2) or 2))
+        except (TypeError, ValueError):
+            short_dte_max = 2
         for contract in contracts:
             quote = self.get_option_quote(contract.symbol)
             if quote is None:
@@ -4167,7 +4341,24 @@ class AlpacaStockBot:
                 }
                 continue
             dte_penalty = abs(dte - target_dte)
-            if contract_type == ContractType.CALL:
+            strike_ratio = strike / underlying_price if underlying_price > 0 else 1.0
+            if prefer_near_money:
+                short_dated = dte <= short_dte_max
+                if contract_type == ContractType.CALL:
+                    target_ratio = 0.995 if short_dated else 1.005
+                    moneyness_penalty = abs(strike_ratio - target_ratio)
+                    if short_dated and strike > underlying_price:
+                        moneyness_penalty += 0.05
+                    elif not short_dated and strike_ratio > 1.025:
+                        moneyness_penalty += (strike_ratio - 1.025) * 4
+                else:
+                    target_ratio = 1.005 if short_dated else 0.995
+                    moneyness_penalty = abs(strike_ratio - target_ratio)
+                    if short_dated and strike < underlying_price:
+                        moneyness_penalty += 0.05
+                    elif not short_dated and strike_ratio < 0.975:
+                        moneyness_penalty += (0.975 - strike_ratio) * 4
+            elif contract_type == ContractType.CALL:
                 moneyness_penalty = max(0.0, (underlying_price - strike) / underlying_price) + abs(strike / underlying_price - 1.04)
             else:
                 moneyness_penalty = max(0.0, (strike - underlying_price) / underlying_price) + abs(strike / underlying_price - 0.96)
@@ -4215,14 +4406,16 @@ class AlpacaStockBot:
                 underlying_return = current_underlying_price / entry_underlying_price - 1
             best_bid = max(float(entry.get("best_bid", entry_price) or entry_price), bid)
             entry["best_bid"] = best_bid
+            profit_pct, stop_pct = self.option_exit_percents(entry)
             profit_trigger = float(
-                entry.get("take_profit_price") or entry_price * (1 + self.config.option_profit_target_pct)
+                entry.get("take_profit_price") or entry_price * (1 + profit_pct)
             )
-            stop_trigger = float(entry.get("stop_loss_price") or entry_price * (1 - self.config.option_stop_loss_pct))
+            stop_trigger = float(entry.get("stop_loss_price") or entry_price * (1 - stop_pct))
             trail_stop = float(entry.get("trailing_stop_price", 0.0) or 0.0)
-            min_profit_hold_days = max(0, int(self.config.option_min_hold_days_for_profit))
+            is_scalp_exit = entry.get("exit_profile") == "kill_zone_scalp"
+            min_profit_hold_days = 0 if is_scalp_exit else max(0, int(self.config.option_min_hold_days_for_profit))
             day0_profit_trigger = round_price(
-                entry_price * (1 + max(self.config.option_profit_target_pct, self.config.option_day0_take_profit_pct))
+                entry_price * (1 + (profit_pct if is_scalp_exit else max(profit_pct, self.config.option_day0_take_profit_pct)))
             )
             standard_profit_exit_allowed = held_days >= min_profit_hold_days
             fast_profit_exit_allowed = bid >= day0_profit_trigger
@@ -4282,9 +4475,12 @@ class AlpacaStockBot:
                         "entry_greeks": entry.get("entry_greeks"),
                         "strike": entry.get("strike"),
                         "dte_at_entry": entry.get("dte_at_entry"),
+                        "profit_target_pct": entry.get("profit_target_pct"),
+                        "stop_loss_pct": entry.get("stop_loss_pct"),
                         "take_profit_price": entry.get("take_profit_price"),
                         "stop_loss_price": entry.get("stop_loss_price"),
                         "underlying_target_price": entry.get("underlying_target_price"),
+                        "exit_profile": entry.get("exit_profile"),
                         "underlying_entry_price": entry_underlying_price or None,
                         "underlying_exit_price": current_underlying_price,
                         "underlying_return_pct": underlying_return,

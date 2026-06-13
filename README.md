@@ -12,6 +12,7 @@ This project is a standalone Alpaca Paper trading console with a local/Railway d
 - Sizing: options are sized as contracts, where `1 contract = 100 shares`
 - Entry: multi-timeframe chart confirmation with news/research nudges, while still requiring option liquidity and Greek checks
 - Exits: default option plan is about `+35%` take profit, `-15%` stop, day-0 profit only for a fast `+45%` move, and a 5-day max hold
+- SPY manual levels: `trade_levels.json` can mark a chop/kill zone. Current SPY context treats `740.09-744.09` as scalp-only unless a 30-minute candle confirms a breakout above `744.09` or a breakdown under `740`.
 - Learning: closed trades now adjust future scores with win rate, profit factor, and downside-adjusted return so one lucky winner does not hide repeated bad losses
 - Cooldown: 7 calendar days after closing the same ticker
 - Orders: Alpaca Paper orders only
@@ -147,6 +148,7 @@ Before opening a new position, the bot now checks:
 - recent Alpaca news headlines for risky keywords
 - reputable external macro RSS feeds with body/title checks, including TruthSocial, Federal Reserve, CNN Business/top/politics, and MarketWatch/Dow Jones feeds by default
 - InsiderFinance GEX levels where available
+- manual chart levels from `trade_levels.json`; SPY uses 30-minute confirmation around its saved kill-zone levels and tighter per-trade exits when it is inside the chop zone
 - buying power and whole-share affordability
 
 The risky-news gate is intentionally a filter, not a buy/sell signal. It blocks new entries on hard catalyst terms such as SEC investigations, subpoenas, restatements, FDA rejections, going-concern warnings, delisting notices, merger agreement risk, cancelled contracts, lawsuits, offerings, and dilution.

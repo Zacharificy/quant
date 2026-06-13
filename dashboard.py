@@ -1291,15 +1291,26 @@ def position_exit_plan(
     stop_trigger = entry * (1 - CONFIG.option_stop_loss_pct)
     saved_profit_trigger = float(tracked_option.get("take_profit_price") or profit_trigger)
     saved_stop_trigger = float(tracked_option.get("stop_loss_price") or stop_trigger)
+    try:
+        profit_pct = float(tracked_option.get("profit_target_pct") or ((saved_profit_trigger / entry) - 1))
+    except (TypeError, ValueError, ZeroDivisionError):
+        profit_pct = CONFIG.option_profit_target_pct
+    try:
+        stop_pct = float(tracked_option.get("stop_loss_pct") or (1 - (saved_stop_trigger / entry)))
+    except (TypeError, ValueError, ZeroDivisionError):
+        stop_pct = CONFIG.option_stop_loss_pct
     strike = float(tracked_option.get("strike") or 0)
     underlying = str(tracked_option.get("underlying") or "").upper()
     direction = str(tracked_option.get("direction") or "").title()
     underlying_target = tracked_option.get("underlying_target_price")
+    exit_profile = str(tracked_option.get("exit_profile") or "").replace("_", " ")
     contract_detail = ""
     if underlying and direction and strike > 0:
         contract_detail = f"{underlying} {direction} strike ${strike:.2f}. "
     if underlying_target:
         contract_detail += f"Underlying guide ${float(underlying_target):.2f}. "
+    if exit_profile and not exit_profile.startswith("tp"):
+        contract_detail += f"{exit_profile.title()} plan. "
     rr = risk_reward_label(saved_profit_trigger - entry, entry - saved_stop_trigger)
     if current >= saved_profit_trigger:
         status = "Profit target reached."
@@ -1308,8 +1319,8 @@ def position_exit_plan(
     else:
         status = "Holding."
     return (
-        f"{status} {contract_detail}TP ${saved_profit_trigger:.2f} (+{CONFIG.option_profit_target_pct:.0%}) | "
-        f"Stop ${saved_stop_trigger:.2f} (-{CONFIG.option_stop_loss_pct:.0%}). "
+        f"{status} {contract_detail}TP ${saved_profit_trigger:.2f} (+{profit_pct:.0%}) | "
+        f"Stop ${saved_stop_trigger:.2f} (-{stop_pct:.0%}). "
         f"Time stop after {CONFIG.option_max_hold_days} days. {rr}. Now ${current:.2f}.{held_order}"
     )
 
