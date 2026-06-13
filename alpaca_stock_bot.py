@@ -2078,6 +2078,8 @@ class AlpacaStockBot:
                 if not analysis:
                     continue
                 evidence = self.best_impact_evidence(item, analysis)
+                full_news_text = re.sub(r"\s+", " ", self.news_item_text(item)).strip()
+                summary = self.market_news_summary(full_news_text, analysis)
                 key = (analysis["event"], evidence[:120])
                 if key in seen:
                     continue
@@ -2092,12 +2094,14 @@ class AlpacaStockBot:
                         "tickers": tickers,
                         "headline": str(item.get("headline") or evidence or "Truth Social market impact"),
                         "evidence": evidence,
-                        "news_text": re.sub(r"\s+", " ", self.news_item_text(item)).strip()[:1600],
+                        "summary": summary,
+                        "news_text": full_news_text[:4000],
                         "media": item.get("media", [])[:3],
                         "link_checks": item.get("link_checks", [])[:4],
                         "reasoning": analysis["reasoning"],
                         "gex": self.news_impact_gex_summary(tickers),
                         "source": str(item.get("source_domain") or item.get("source") or item.get("url") or ""),
+                        "url": str(item.get("url") or ""),
                         "detected_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
                     }
                 )
@@ -2337,6 +2341,55 @@ class AlpacaStockBot:
             f"{event_name}: full news text scored {bullish_score:.1f} bullish vs {bearish_score:.1f} bearish, "
             f"so affected tickers are marked likely {direction} with {confidence:.0%} confidence."
         )
+
+    @staticmethod
+    def market_news_summary(text: str, analysis: dict | None = None, limit: int = 460) -> str:
+        clean = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not clean:
+            return ""
+        event_terms: tuple[str, ...] = ()
+        if analysis:
+            try:
+                event_terms = tuple(AlpacaStockBot.truth_event_profile(str(analysis.get("event")))["event_terms"])
+            except Exception:
+                event_terms = ()
+        market_terms = (
+            "market",
+            "stock",
+            "stocks",
+            "spy",
+            "qqq",
+            "nasdaq",
+            "s&p",
+            "futures",
+            "rates",
+            "tariff",
+            "iran",
+            "israel",
+            "war",
+            "strike",
+            "ceasefire",
+            "deal",
+            "fed",
+            "nvidia",
+            "tesla",
+            "chip",
+            "oil",
+        )
+        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", clean) if part.strip()]
+        selected = []
+        for sentence in sentences:
+            lowered = sentence.lower()
+            if any(term in lowered for term in event_terms) or any(term in lowered for term in market_terms):
+                selected.append(sentence)
+            if len(" ".join(selected)) >= limit * 0.75:
+                break
+        if not selected:
+            selected = sentences[:2] or [clean]
+        summary = " ".join(selected)
+        if len(summary) > limit:
+            summary = summary[: limit - 3].rsplit(" ", 1)[0].rstrip(" ,.;:") + "..."
+        return summary
 
     def best_impact_evidence(self, item: dict[str, str], analysis: dict) -> str:
         text = self.news_item_text(item)
@@ -3676,10 +3729,28 @@ class AlpacaStockBot:
 
     @staticmethod
     def news_item_text(item: dict[str, str]) -> str:
-        return " ".join(
-            str(item.get(field, "") or "")
+        raw_parts = [
+            re.sub(r"\s+", " ", str(item.get(field, "") or "")).strip()
             for field in ("headline", "summary", "content")
-        )
+        ]
+        raw_parts = [part for part in raw_parts if part]
+        unique_parts = []
+        for index, part in enumerate(raw_parts):
+            lowered = part.lower()
+            duplicate_of_longer = False
+            for other_index, other in enumerate(raw_parts):
+                if other_index == index:
+                    continue
+                other_lowered = other.lower()
+                if len(other) >= len(part) + 40 and lowered in other_lowered:
+                    duplicate_of_longer = True
+                    break
+            if duplicate_of_longer:
+                continue
+            if any(lowered == existing.lower() or lowered in existing.lower() for existing in unique_parts):
+                continue
+            unique_parts.append(part)
+        return " ".join(unique_parts)
 
     @staticmethod
     def news_keyword_match(text: str, keyword: str) -> bool:

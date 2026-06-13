@@ -183,16 +183,22 @@ class DiscordNotifier:
         marker = _direction_marker("call" if direction == "up" or "bull" in bias.lower() else "put" if direction == "down" or "bear" in bias.lower() else "")
         headline = str(alert.get("headline", "News impact alert")).strip()
         evidence = str(alert.get("evidence", "")).strip()
-        news = str(alert.get("news_text") or evidence or headline).strip()
+        summary = str(alert.get("summary") or alert.get("news_text") or evidence or headline).strip()
         reasoning = str(alert.get("reasoning", "")).strip()
         source = str(alert.get("source", "")).strip()
+        url = str(alert.get("url", "")).strip()
+        summary = _clip_line(_dedupe_text(summary), 520)
+        evidence = _clip_line(_dedupe_text(evidence), 220)
+        reasoning = _clip_line(reasoning, 260)
         content = (
             f"{mention}{marker} **Market News**\n"
             f"{now}\n"
             f"Stock: {tickers}\n"
             f"Direction: **{direction_label}**\n"
-            f"News: {news}"
+            f"Summary: {summary}"
         )
+        if evidence and evidence.lower() not in summary.lower() and summary.lower() not in evidence.lower():
+            content += f"\nContext: {evidence}"
         media_lines = _media_lines(alert.get("media", []))
         if media_lines:
             content += "\n" + "\n".join(media_lines)
@@ -203,7 +209,9 @@ class DiscordNotifier:
             content += f"\nWhy: {reasoning}"
         if source:
             content += f"\nSource: {source}"
-        self.send_chunks(content)
+        if url:
+            content += f"\nFull: {url}"
+        self.send(content)
 
     @staticmethod
     def _post_json(url: str, payload: dict, token: str = "") -> None:
@@ -261,6 +269,36 @@ def _direction_marker(value) -> str:
     if "PUT" in text or "SELL" in text or "SHORT" in text:
         return "🔴⬇️"
     return "🔵⬆️"
+
+
+def _dedupe_text(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    half = len(text) // 2
+    if half > 80:
+        left = text[:half].strip(" ,.;:")
+        right = text[half:].strip(" ,.;:")
+        prefix = left[: max(40, min(160, len(left)))]
+        if prefix and right.lower().startswith(prefix.lower()):
+            return right
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+    kept = []
+    seen = set()
+    for sentence in sentences:
+        key = re.sub(r"\W+", " ", sentence.lower()).strip()[:120]
+        if key and key in seen:
+            continue
+        seen.add(key)
+        kept.append(sentence)
+    return " ".join(kept) if kept else text
+
+
+def _clip_line(value: str, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rsplit(" ", 1)[0].rstrip(" ,.;:") + "..."
 
 
 def _media_lines(media_items) -> list[str]:
