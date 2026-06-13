@@ -187,7 +187,7 @@ def run_autoresearch_loop():
 
 
 def run_truth_monitor_loop():
-    interval_seconds = max(5, int(float(os.getenv("BOT_TRUTH_MONITOR_INTERVAL_SECONDS", "10"))))
+    interval_seconds = max(5, int(float(os.getenv("BOT_TRUTH_MONITOR_INTERVAL_SECONDS", "5"))))
     max_backoff_seconds = max(interval_seconds, int(float(os.getenv("BOT_TRUTH_MONITOR_MAX_BACKOFF_SECONDS", "120"))))
     fetch_limit = max(1, int(os.getenv("BOT_TRUTH_MONITOR_FETCH_LIMIT", "40")))
     config = StrategyConfig()

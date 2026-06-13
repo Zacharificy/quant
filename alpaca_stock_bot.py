@@ -199,6 +199,7 @@ class StrategyConfig:
     news_impact_mention_user_id: str = "1270486587402358784"
     news_impact_max_item_age_hours: int = 48
     truth_monitor_max_post_age_minutes: int = 45
+    truth_monitor_link_checks_enabled: bool = True
     macro_news_keywords: tuple[str, ...] = (
         "war",
         "invasion",
@@ -647,6 +648,9 @@ class AlpacaStockBot:
             ),
             "truth_monitor_max_post_age_minutes": env_int(
                 "BOT_TRUTH_MONITOR_MAX_POST_AGE_MINUTES", config.truth_monitor_max_post_age_minutes, 1
+            ),
+            "truth_monitor_link_checks_enabled": env_bool(
+                "BOT_TRUTH_MONITOR_LINK_CHECKS_ENABLED", config.truth_monitor_link_checks_enabled
             ),
             "option_max_hold_days": env_int("BOT_OPTION_MAX_HOLD_DAYS", config.option_max_hold_days, 1),
             "min_learning_trades_per_setup": env_int(
@@ -2755,8 +2759,13 @@ class AlpacaStockBot:
         return posts
 
     def process_truth_social_monitor_once(self, limit: int = 6) -> list[dict]:
-        posts = self.fetch_truth_social_posts(limit=limit, enrich=True, check_links=True)
+        started = time.perf_counter()
+        posts = self.fetch_truth_social_posts(limit=limit, enrich=False, check_links=False)
         candidate_posts = self.recent_unseen_truth_posts(posts)
+        candidate_posts = self.enrich_truth_social_posts(
+            candidate_posts,
+            check_links=self.config.truth_monitor_link_checks_enabled,
+        )
         alerts = self.detect_news_impact_alerts({"TRUTH": candidate_posts})
         self.state["last_truth_monitor_alerts"] = {
             "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
@@ -2764,6 +2773,7 @@ class AlpacaStockBot:
             "fresh_unseen_posts": len(candidate_posts),
             "count": len(alerts),
             "alerts": alerts[:8],
+            "duration_ms": int((time.perf_counter() - started) * 1000),
         }
         sent = 0
         max_alerts = 1
@@ -2781,6 +2791,34 @@ class AlpacaStockBot:
         self.mark_truth_posts_seen(posts)
         save_state(self.state_path, self.state)
         return alerts
+
+    def enrich_truth_social_posts(self, posts: list[dict], check_links: bool = True) -> list[dict]:
+        enriched_posts = []
+        for post in posts:
+            item = dict(post)
+            status_id = str(item.get("truth_id") or "")
+            if status_id:
+                enriched = self.fetch_truth_status(status_id)
+                if enriched:
+                    item.update(enriched)
+            if check_links:
+                links = [
+                    url
+                    for url in item.get("links", [])[:4]
+                    if self.should_check_truth_link(url)
+                ]
+                item["link_checks"] = [self.safe_link_report(url) for url in links[:2]]
+            item["has_body"] = bool(item.get("summary") or item.get("content"))
+            enriched_posts.append(item)
+        return enriched_posts
+
+    @staticmethod
+    def should_check_truth_link(url: str) -> bool:
+        host = urlparse(str(url or "")).netloc.lower()
+        host = host[4:] if host.startswith("www.") else host
+        if host in {"truthsocial.com", "trumpstruth.org", "static-assets-1.truthsocial.com"}:
+            return False
+        return bool(host)
 
     def recent_unseen_truth_posts(self, posts: list[dict]) -> list[dict]:
         seen = set(self.state.get("truth_monitor_seen_ids") or [])

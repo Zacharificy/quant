@@ -155,7 +155,7 @@ The risky-news gate is intentionally a filter, not a buy/sell signal. It blocks 
 
 Market-news Discord pings are also filtered. The bot reads the headline plus RSS summary/article body when available, then only pings when a trusted source contains a recent real market-moving event, market context, and a directional phrase. Examples include Trump/Iran escalation or de-escalation, tariffs, Fed/rate surprises, AI/chip policy, and Tesla/EV policy. Alert text matching uses word/phrase boundaries, so names such as `Warsh` do not trip the `war` rule. The alert names the affected ticker group and whether the news is likely up or likely down. Discord receives a short digest instead of the full article/post; the full de-duplicated text is kept in the bot state under the latest news-impact alert for review.
 
-Railway also starts a dedicated Truth Social monitor when `BOT_ENABLE_TRUTH_MONITOR=true`. It polls Trump's public Truth Social feed every `BOT_TRUTH_MONITOR_INTERVAL_SECONDS` seconds, enriches posts through Truth Social's public status API, checks linked URLs for basic safety issues, and includes media attachment metadata such as image/video URLs, duration, dimensions, and descriptions when available. Discord pings are fresh-only: posts older than `BOT_TRUTH_MONITOR_MAX_POST_AGE_MINUTES` are ignored for alerts, seen Truth IDs are remembered, and only the top market-moving alert is sent per poll so redeploys do not replay old bullish and bearish history. If Truth Social resets or blocks a feed request, the monitor backs off up to `BOT_TRUTH_MONITOR_MAX_BACKOFF_SECONDS` instead of hammering the feed. It cannot guarantee a video transcript or OCR text from every image because Truth Social does not always expose that data, so media URLs are included for manual review when no transcript or description exists.
+Railway also starts a dedicated Truth Social monitor when `BOT_ENABLE_TRUTH_MONITOR=true`. It polls Trump's public Truth Social feed every `BOT_TRUTH_MONITOR_INTERVAL_SECONDS` seconds. The monitor is optimized for speed: it first reads the RSS feed without status enrichment, filters to fresh unseen posts, then enriches only those candidates through Truth Social's public status API. Discord pings are fresh-only: posts older than `BOT_TRUTH_MONITOR_MAX_POST_AGE_MINUTES` are ignored for alerts, seen Truth IDs are remembered, and only the top market-moving alert is sent per poll so redeploys do not replay old bullish and bearish history. Link checks skip TruthSocial self-links that usually return 403, but external post links are still checked when `BOT_TRUTH_MONITOR_LINK_CHECKS_ENABLED=true`. If Truth Social resets or blocks a feed request, the monitor backs off up to `BOT_TRUTH_MONITOR_MAX_BACKOFF_SECONDS` instead of hammering the feed. It cannot guarantee a video transcript or OCR text from every image because Truth Social does not always expose that data, so media URLs are included for manual review when no transcript or description exists.
 
 For options, the bot only uses long premium:
 
@@ -239,8 +239,10 @@ BOT_RESEARCH_OVERNIGHT_END_HOUR_ET=8
 BOT_AUTORESEARCH_CHECK_MINUTES=30
 BOT_AUTORESEARCH_MAX_EXPERIMENTS=0
 BOT_AUTORESEARCH_YIELD_SECONDS=0.15
+BOT_TRUTH_MONITOR_INTERVAL_SECONDS=5
 BOT_TRUTH_MONITOR_MAX_BACKOFF_SECONDS=120
 BOT_TRUTH_MONITOR_MAX_POST_AGE_MINUTES=45
+BOT_TRUTH_MONITOR_LINK_CHECKS_ENABLED=true
 ```
 
 It runs at most once per ET date. It can apply settings only if the candidate passes the guardrails below. For persistent Railway storage, put these on the `/data` volume:
