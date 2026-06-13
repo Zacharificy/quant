@@ -187,6 +187,7 @@ class DiscordNotifier:
         reasoning = str(alert.get("reasoning", "")).strip()
         source = str(alert.get("source", "")).strip()
         url = str(alert.get("url", "")).strip()
+        created_at = str(alert.get("created_at", "")).strip()
         summary = _clip_line(_dedupe_text(summary), 520)
         evidence = _clip_line(_dedupe_text(evidence), 220)
         reasoning = _clip_line(reasoning, 260)
@@ -197,6 +198,8 @@ class DiscordNotifier:
             f"Direction: **{direction_label}**\n"
             f"Summary: {summary}"
         )
+        if created_at:
+            content += f"\nPosted: {created_at}"
         if evidence and evidence.lower() not in summary.lower() and summary.lower() not in evidence.lower():
             content += f"\nContext: {evidence}"
         media_lines = _media_lines(alert.get("media", []))

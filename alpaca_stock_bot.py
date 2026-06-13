@@ -1,4 +1,5 @@
 import argparse
+from email.utils import parsedate_to_datetime
 import html
 import json
 import logging
@@ -196,6 +197,7 @@ class StrategyConfig:
     news_impact_max_alerts_per_scan: int = 1
     news_impact_max_tickers: int = 4
     news_impact_mention_user_id: str = "1270486587402358784"
+    truth_monitor_max_post_age_minutes: int = 45
     macro_news_keywords: tuple[str, ...] = (
         "war",
         "invasion",
@@ -638,6 +640,9 @@ class AlpacaStockBot:
             ),
             "news_impact_max_tickers": env_int(
                 "BOT_NEWS_IMPACT_MAX_TICKERS", config.news_impact_max_tickers, 1
+            ),
+            "truth_monitor_max_post_age_minutes": env_int(
+                "BOT_TRUTH_MONITOR_MAX_POST_AGE_MINUTES", config.truth_monitor_max_post_age_minutes, 1
             ),
             "option_max_hold_days": env_int("BOT_OPTION_MAX_HOLD_DAYS", config.option_max_hold_days, 1),
             "min_learning_trades_per_setup": env_int(
@@ -2096,6 +2101,7 @@ class AlpacaStockBot:
                         "evidence": evidence,
                         "summary": summary,
                         "news_text": full_news_text[:4000],
+                        "created_at": str(item.get("created_at") or ""),
                         "media": item.get("media", [])[:3],
                         "link_checks": item.get("link_checks", [])[:4],
                         "reasoning": analysis["reasoning"],
@@ -2182,6 +2188,14 @@ class AlpacaStockBot:
             "ceasefire",
             "finalized peace",
             "signing of the peace",
+            "deal is scheduled to get signed",
+            "scheduled to get signed",
+            "after it is signed",
+            "hormuz strait is open",
+            "hormuz strait is open to all",
+            "open to all",
+            "wall to no nuclear weapon",
+            "no nuclear weapon",
             "brought to the highest level of iranian leadership and approved",
         )
         return "iran" in text and any(pattern in text for pattern in deescalation_patterns)
@@ -2360,8 +2374,12 @@ class AlpacaStockBot:
                     "no attack",
                     "will not attack",
                     "signing",
+                    "signed",
                     "finalized",
                     "finalised",
+                    "open to all",
+                    "hormuz strait is open",
+                    "no nuclear weapon",
                 ),
                 "bearish": ("attack", "strike", "airstrike", "missile", "retaliation", "war", "bomb", "hormuz closed", "sanction"),
                 "modifiers": ("market", "stocks", "oil", "energy", "futures", "nasdaq", "s&p"),
@@ -2713,14 +2731,17 @@ class AlpacaStockBot:
 
     def process_truth_social_monitor_once(self, limit: int = 6) -> list[dict]:
         posts = self.fetch_truth_social_posts(limit=limit, enrich=True, check_links=True)
-        alerts = self.detect_news_impact_alerts({"TRUTH": posts})
+        candidate_posts = self.recent_unseen_truth_posts(posts)
+        alerts = self.detect_news_impact_alerts({"TRUTH": candidate_posts})
         self.state["last_truth_monitor_alerts"] = {
             "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+            "posts_checked": len(posts),
+            "fresh_unseen_posts": len(candidate_posts),
             "count": len(alerts),
             "alerts": alerts[:8],
         }
         sent = 0
-        max_alerts = max(1, self.config.news_impact_max_alerts_per_scan)
+        max_alerts = 1
         max_tickers = max(1, self.config.news_impact_max_tickers)
         for alert in alerts:
             if self.news_impact_recently_sent(alert):
@@ -2732,8 +2753,54 @@ class AlpacaStockBot:
             sent += 1
             if sent >= max_alerts:
                 break
+        self.mark_truth_posts_seen(posts)
         save_state(self.state_path, self.state)
         return alerts
+
+    def recent_unseen_truth_posts(self, posts: list[dict]) -> list[dict]:
+        seen = set(self.state.get("truth_monitor_seen_ids") or [])
+        fresh = []
+        for post in posts:
+            truth_id = str(post.get("truth_id") or "")
+            if truth_id and truth_id in seen:
+                continue
+            if not self.is_recent_truth_post(post):
+                continue
+            fresh.append(post)
+        return fresh
+
+    def is_recent_truth_post(self, post: dict) -> bool:
+        created = self.parse_news_datetime(str(post.get("created_at") or ""))
+        if created is None:
+            return False
+        age = datetime.now(NY_TZ) - created.astimezone(NY_TZ)
+        return timedelta(0) <= age <= timedelta(minutes=max(1, self.config.truth_monitor_max_post_age_minutes))
+
+    def mark_truth_posts_seen(self, posts: list[dict]) -> None:
+        seen = list(self.state.get("truth_monitor_seen_ids") or [])
+        seen_set = set(seen)
+        for post in posts:
+            truth_id = str(post.get("truth_id") or "")
+            if truth_id and truth_id not in seen_set:
+                seen.append(truth_id)
+                seen_set.add(truth_id)
+        self.state["truth_monitor_seen_ids"] = seen[-300:]
+
+    @staticmethod
+    def parse_news_datetime(raw: str) -> datetime | None:
+        value = str(raw or "").strip()
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(value)
+            except (TypeError, ValueError, IndexError, OverflowError):
+                return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=NY_TZ)
+        return parsed.astimezone(NY_TZ)
 
     @staticmethod
     def parse_truth_rss_item(node: ET.Element) -> dict | None:
