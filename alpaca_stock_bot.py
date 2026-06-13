@@ -10,6 +10,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
+from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -50,8 +51,12 @@ DEFAULT_EXTERNAL_MACRO_RSS_URLS = (
     "https://feeds.content.dowjones.io/public/rss/mw_topstories",
     "https://feeds.content.dowjones.io/public/rss/mw_marketpulse",
 )
+TRUTH_SOCIAL_FEED_URL = "https://trumpstruth.org/feed"
+TRUTH_SOCIAL_STATUS_API_URL = "https://truthsocial.com/api/v1/statuses/{status_id}"
 TRUSTED_EXTERNAL_NEWS_DOMAINS = (
     "trumpstruth.org",
+    "truthsocial.com",
+    "static-assets-1.truthsocial.com",
     "federalreserve.gov",
     "rss.cnn.com",
     "cnn.com",
@@ -1925,6 +1930,7 @@ class AlpacaStockBot:
                 source_type = str(item.get("source_type") or "").lower()
                 trusted_macro_source = (
                     source_type == "external_macro"
+                    or source_type == "truth_social"
                     or "trumpstruth.org" in source_domain
                     or "truthsocial.com" in source_domain
                     or any(domain in source_domain for domain in TRUSTED_EXTERNAL_NEWS_DOMAINS)
@@ -1950,7 +1956,9 @@ class AlpacaStockBot:
                         "tickers": tickers,
                         "headline": str(item.get("headline") or evidence or "Truth Social market impact"),
                         "evidence": evidence,
-                        "news_text": self.news_item_evidence(item, "news", limit=1600),
+                        "news_text": re.sub(r"\s+", " ", self.news_item_text(item)).strip()[:1600],
+                        "media": item.get("media", [])[:3],
+                        "link_checks": item.get("link_checks", [])[:4],
                         "reasoning": analysis["reasoning"],
                         "gex": self.news_impact_gex_summary(tickers),
                         "source": str(item.get("source_domain") or item.get("source") or item.get("url") or ""),
@@ -2401,6 +2409,285 @@ class AlpacaStockBot:
             "article_fetches": article_fetches,
         }
         return items[:80]
+
+    def fetch_truth_social_posts(self, limit: int = 6, enrich: bool = True, check_links: bool = True) -> list[dict]:
+        """Fetch recent public posts from Trump's Truth Social feed and enrich from Truth's status API."""
+        posts = []
+        try:
+            request = urllib.request.Request(
+                TRUTH_SOCIAL_FEED_URL,
+                headers={"User-Agent": "Mozilla/5.0 TradingConsoleTruthMonitor/1.0"},
+            )
+            with urllib.request.urlopen(request, timeout=8) as response:
+                payload = response.read(1_000_000)
+            root = ET.fromstring(payload)
+        except Exception as exc:
+            logging.warning("Truth Social feed unavailable: %s", exc)
+            self.state["truth_monitor"] = {
+                "status": "feed_unavailable",
+                "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+                "error": str(exc)[:180],
+            }
+            return []
+
+        for node in root.findall(".//item")[: max(1, limit)]:
+            item = self.parse_truth_rss_item(node)
+            if not item:
+                continue
+            status_id = str(item.get("truth_id") or "")
+            if enrich and status_id:
+                enriched = self.fetch_truth_status(status_id)
+                if enriched:
+                    item.update(enriched)
+            if check_links:
+                item["link_checks"] = [self.safe_link_report(url) for url in item.get("links", [])[:4]]
+            item["has_body"] = bool(item.get("summary") or item.get("content"))
+            posts.append(item)
+
+        self.state["truth_monitor"] = {
+            "status": "ok" if posts else "empty",
+            "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+            "posts": len(posts),
+            "latest_id": posts[0].get("truth_id", "") if posts else "",
+            "latest_url": posts[0].get("url", "") if posts else "",
+        }
+        return posts
+
+    def process_truth_social_monitor_once(self, limit: int = 6) -> list[dict]:
+        posts = self.fetch_truth_social_posts(limit=limit, enrich=True, check_links=True)
+        alerts = self.detect_news_impact_alerts({"TRUTH": posts})
+        self.state["last_truth_monitor_alerts"] = {
+            "checked_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+            "count": len(alerts),
+            "alerts": alerts[:8],
+        }
+        sent = 0
+        max_alerts = max(1, self.config.news_impact_max_alerts_per_scan)
+        max_tickers = max(1, self.config.news_impact_max_tickers)
+        for alert in alerts:
+            if self.news_impact_recently_sent(alert):
+                continue
+            short_alert = dict(alert)
+            short_alert["tickers"] = list(alert.get("tickers", []))[:max_tickers]
+            self.notifier.news_impact(short_alert, self.config.news_impact_mention_user_id)
+            self.mark_news_impact_sent(short_alert)
+            sent += 1
+            if sent >= max_alerts:
+                break
+        save_state(self.state_path, self.state)
+        return alerts
+
+    @staticmethod
+    def parse_truth_rss_item(node: ET.Element) -> dict | None:
+        def child_text(name: str) -> str:
+            found = node.find(name)
+            return found.text if found is not None and found.text else ""
+
+        def truth_child_text(local_name: str) -> str:
+            for child in node:
+                if child.tag.endswith(f"}}{local_name}") or child.tag == f"truth:{local_name}":
+                    return child.text or ""
+            return ""
+
+        title = html.unescape(re.sub("<[^>]+>", " ", child_text("title"))).strip()
+        description_html = child_text("description")
+        description = AlpacaStockBot.compact_html_text(description_html, limit=4000)
+        original_url = truth_child_text("originalUrl").strip()
+        truth_id = truth_child_text("originalId").strip()
+        url = original_url or child_text("link").strip() or TRUTH_SOCIAL_FEED_URL
+        links = AlpacaStockBot.extract_links(description_html)
+        if original_url:
+            links.insert(0, original_url)
+        links = AlpacaStockBot.unique_urls(links)
+        if not title and not description:
+            title = "[media-only Truth Social post]"
+        return {
+            "headline": title[:500],
+            "summary": description,
+            "content": description,
+            "url": url,
+            "links": links,
+            "media": [],
+            "source": TRUTH_SOCIAL_FEED_URL,
+            "source_domain": "truthsocial.com",
+            "source_type": "truth_social",
+            "created_at": child_text("pubDate").strip(),
+            "truth_id": truth_id,
+        }
+
+    def fetch_truth_status(self, status_id: str) -> dict:
+        if not re.fullmatch(r"\d{6,}", str(status_id or "")):
+            return {}
+        url = TRUTH_SOCIAL_STATUS_API_URL.format(status_id=status_id)
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 TradingConsoleTruthMonitor/1.0",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=8) as response:
+                payload = json.loads(response.read(1_500_000).decode("utf-8", errors="ignore"))
+        except Exception as exc:
+            logging.info("Could not enrich Truth Social status %s: %s", status_id, exc)
+            return {}
+
+        content_html = str(payload.get("content") or "")
+        content = self.compact_html_text(content_html, limit=5000)
+        links = self.extract_links(content_html)
+        card = payload.get("card") or {}
+        card_text = " ".join(
+            str(card.get(key, "") or "")
+            for key in ("title", "description", "provider_name", "author_name")
+        )
+        if card.get("url"):
+            links.append(str(card.get("url")))
+        media = [self.truth_media_summary(media_item) for media_item in (payload.get("media_attachments") or [])]
+        media_text = " ".join(str(media_item.get("description", "") or "") for media_item in media)
+        url = str(payload.get("url") or payload.get("uri") or "")
+        if url:
+            links.insert(0, url)
+        combined = " ".join(part for part in (content, card_text, media_text) if part).strip()
+        return {
+            "headline": (content or str(payload.get("spoiler_text") or "[media-only Truth Social post]"))[:500],
+            "summary": combined[:5000],
+            "content": combined[:5000],
+            "url": url,
+            "links": self.unique_urls(links),
+            "media": media,
+            "card": {
+                "title": str(card.get("title") or "")[:180],
+                "description": str(card.get("description") or "")[:500],
+                "url": str(card.get("url") or "")[:500],
+            }
+            if card
+            else {},
+            "source": url or TRUTH_SOCIAL_FEED_URL,
+            "source_domain": "truthsocial.com",
+            "source_type": "truth_social",
+            "created_at": str(payload.get("created_at") or ""),
+            "truth_id": status_id,
+        }
+
+    @staticmethod
+    def truth_media_summary(media_item: dict) -> dict:
+        media_type = str(media_item.get("type") or "media")
+        meta = media_item.get("meta") or {}
+        original = meta.get("original") or {}
+        duration = original.get("duration")
+        size = ""
+        if original.get("width") and original.get("height"):
+            size = f"{original.get('width')}x{original.get('height')}"
+        return {
+            "type": media_type,
+            "url": str(media_item.get("url") or "")[:700],
+            "preview_url": str(media_item.get("preview_url") or "")[:700],
+            "description": str(media_item.get("description") or "")[:700],
+            "duration": round(float(duration), 1) if isinstance(duration, (int, float)) else "",
+            "size": size,
+            "external_video_id": str(media_item.get("external_video_id") or "")[:120],
+        }
+
+    @staticmethod
+    def extract_links(value: str) -> list[str]:
+        text = str(value or "")
+        links = re.findall(r"""href=["']([^"']+)["']""", text, flags=re.IGNORECASE)
+        links.extend(re.findall(r"https?://[^\s<>'\")]+", html.unescape(text)))
+        return AlpacaStockBot.unique_urls(links)
+
+    @staticmethod
+    def unique_urls(urls: list[str]) -> list[str]:
+        out = []
+        seen = set()
+        for url in urls:
+            clean = html.unescape(str(url or "")).strip().rstrip(".,);")
+            if not clean or clean in seen:
+                continue
+            parsed = urlparse(clean)
+            host = parsed.hostname or ""
+            if parsed.scheme in {"http", "https"} and (not host or "." not in host):
+                continue
+            seen.add(clean)
+            out.append(clean)
+        return out
+
+    @staticmethod
+    def safe_link_report(url: str) -> dict:
+        raw_url = str(url or "").strip()
+        parsed = urlparse(raw_url)
+        host = parsed.hostname or ""
+        report = {
+            "url": raw_url[:700],
+            "host": host[:180],
+            "status": "unchecked",
+            "safe": False,
+            "reason": "",
+            "final_url": "",
+            "content_type": "",
+        }
+        if parsed.scheme != "https":
+            report.update({"status": "blocked", "reason": "non-https link"})
+            return report
+        if not host or "@" in parsed.netloc:
+            report.update({"status": "blocked", "reason": "suspicious host"})
+            return report
+        if AlpacaStockBot.is_private_or_local_host(host):
+            report.update({"status": "blocked", "reason": "private/local host"})
+            return report
+        if re.search(r"\.(exe|scr|bat|cmd|msi|apk|dmg|pkg|jar|ps1)(?:$|[?#])", parsed.path, re.IGNORECASE):
+            report.update({"status": "blocked", "reason": "executable-looking file"})
+            return report
+        try:
+            request = urllib.request.Request(
+                raw_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 TradingConsoleLinkCheck/1.0",
+                    "Range": "bytes=0-2047",
+                },
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=6) as response:
+                final_url = response.geturl()
+                final = urlparse(final_url)
+                content_type = str(response.headers.get("content-type", "")).lower()
+            if final.scheme != "https" or AlpacaStockBot.is_private_or_local_host(final.hostname or ""):
+                report.update({"status": "blocked", "reason": "unsafe redirect", "final_url": final_url[:700]})
+                return report
+            if any(bad in content_type for bad in ("application/x-msdownload", "application/x-msdos-program")):
+                report.update(
+                    {
+                        "status": "blocked",
+                        "reason": "executable content-type",
+                        "final_url": final_url[:700],
+                        "content_type": content_type[:120],
+                    }
+                )
+                return report
+            report.update(
+                {
+                    "status": "ok",
+                    "safe": True,
+                    "reason": "https link checked",
+                    "final_url": final_url[:700],
+                    "content_type": content_type[:120],
+                }
+            )
+            return report
+        except Exception as exc:
+            report.update({"status": "unreachable", "reason": str(exc)[:160]})
+            return report
+
+    @staticmethod
+    def is_private_or_local_host(host: str) -> bool:
+        clean = str(host or "").strip().lower()
+        if clean in {"localhost", "0.0.0.0"} or clean.endswith(".local"):
+            return True
+        try:
+            ip = ip_address(clean)
+            return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+        except ValueError:
+            return False
 
     @staticmethod
     def interleave_news_sources(sources: list[list[dict[str, str]]]) -> list[dict[str, str]]:

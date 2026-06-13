@@ -193,6 +193,12 @@ class DiscordNotifier:
             f"Direction: **{direction_label}**\n"
             f"News: {news}"
         )
+        media_lines = _media_lines(alert.get("media", []))
+        if media_lines:
+            content += "\n" + "\n".join(media_lines)
+        link_lines = _link_check_lines(alert.get("link_checks", []))
+        if link_lines:
+            content += "\n" + "\n".join(link_lines)
         if reasoning:
             content += f"\nWhy: {reasoning}"
         if source:
@@ -255,6 +261,47 @@ def _direction_marker(value) -> str:
     if "PUT" in text or "SELL" in text or "SHORT" in text:
         return "🔴⬇️"
     return "🔵⬆️"
+
+
+def _media_lines(media_items) -> list[str]:
+    lines = []
+    if not isinstance(media_items, list):
+        return lines
+    for item in media_items[:3]:
+        if not isinstance(item, dict):
+            continue
+        media_type = str(item.get("type") or "media")
+        duration = item.get("duration")
+        size = str(item.get("size") or "")
+        description = str(item.get("description") or "").strip()
+        url = str(item.get("url") or item.get("preview_url") or "").strip()
+        bits = [media_type]
+        if duration:
+            bits.append(f"{duration}s")
+        if size:
+            bits.append(size)
+        if description:
+            bits.append(description[:160])
+        if url:
+            bits.append(url[:260])
+        lines.append("Media: " + " | ".join(bits))
+    return lines
+
+
+def _link_check_lines(link_checks) -> list[str]:
+    lines = []
+    if not isinstance(link_checks, list):
+        return lines
+    for check in link_checks[:3]:
+        if not isinstance(check, dict):
+            continue
+        status = str(check.get("status") or "unchecked")
+        host = str(check.get("host") or "")
+        reason = str(check.get("reason") or "")
+        final_url = str(check.get("final_url") or check.get("url") or "")
+        verdict = "safe" if check.get("safe") else "blocked" if status == "blocked" else status
+        lines.append(f"Link: {verdict} {host} - {reason} {final_url[:220]}".strip())
+    return lines
 
 
 def _clean_symbol(value) -> str:

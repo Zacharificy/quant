@@ -153,6 +153,8 @@ The risky-news gate is intentionally a filter, not a buy/sell signal. It blocks 
 
 Market-news Discord pings are also filtered. The bot reads the headline plus RSS summary/article body when available, then only pings when a trusted source contains a real market-moving event, market context, and a directional phrase. Examples include Trump/Iran escalation or de-escalation, tariffs, Fed/rate surprises, AI/chip policy, and Tesla/EV policy. The alert names the affected ticker group and whether the news is likely up or likely down.
 
+Railway also starts a dedicated Truth Social monitor when `BOT_ENABLE_TRUTH_MONITOR=true`. It polls Trump's public Truth Social feed every `BOT_TRUTH_MONITOR_INTERVAL_SECONDS` seconds, enriches posts through Truth Social's public status API, checks linked URLs for basic safety issues, and includes media attachment metadata such as image/video URLs, duration, dimensions, and descriptions when available. It cannot guarantee a video transcript or OCR text from every image because Truth Social does not always expose that data, so media URLs are included for manual review when no transcript or description exists.
+
 For options, the bot only uses long premium:
 
 - bullish setup -> buy-to-open one call

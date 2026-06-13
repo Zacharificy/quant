@@ -181,6 +181,31 @@ def run_autoresearch_loop():
         time.sleep(check_seconds)
 
 
+def run_truth_monitor_loop():
+    interval_seconds = max(5, int(float(os.getenv("BOT_TRUTH_MONITOR_INTERVAL_SECONDS", "10"))))
+    fetch_limit = max(1, int(os.getenv("BOT_TRUTH_MONITOR_FETCH_LIMIT", "6")))
+    config = StrategyConfig()
+
+    while True:
+        try:
+            bot = AlpacaStockBot(config)
+            alerts = bot.process_truth_social_monitor_once(limit=fetch_limit)
+            logging.info("Truth monitor checked %d alert candidate(s).", len(alerts))
+        except Exception:
+            logging.exception("Truth monitor loop failed; will retry after interval.")
+        time.sleep(interval_seconds)
+
+
+def start_truth_monitor_loop():
+    if not env_flag("BOT_ENABLE_TRUTH_MONITOR", True):
+        logging.info("Truth Social monitor is disabled.")
+        return
+
+    worker = threading.Thread(target=run_truth_monitor_loop, name="bot-truth-monitor-loop", daemon=True)
+    worker.start()
+    logging.info("Started Truth Social monitor loop thread.")
+
+
 def start_autoresearch_loop():
     if not env_flag("BOT_ENABLE_AUTO_RESEARCH", True) and not env_flag("BOT_ENABLE_TICKER_RESEARCH", True):
         logging.info("Closed-market research is disabled.")
@@ -205,6 +230,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     start_discord_presence()
     start_background_loop()
+    start_truth_monitor_loop()
     start_autoresearch_loop()
 
     host = os.getenv("HOST", "0.0.0.0")
