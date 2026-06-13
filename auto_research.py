@@ -2,6 +2,7 @@ import csv
 import json
 import logging
 import os
+import time
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +49,8 @@ def candidate_rank(row: dict) -> tuple:
 
 
 def run_autoresearch(apply: bool = False) -> dict:
+    max_experiments = int(float(os.getenv("BOT_AUTORESEARCH_MAX_EXPERIMENTS", "0") or 0))
+    yield_seconds = max(0.0, float(os.getenv("BOT_AUTORESEARCH_YIELD_SECONDS", "0.15") or 0.0))
     base = StrategyConfig(history_days=900)
     current_settings = load_current_settings()
     if current_settings:
@@ -65,6 +68,9 @@ def run_autoresearch(apply: bool = False) -> dict:
 
     rows = []
     for number, params in enumerate(parameter_sets(), start=1):
+        if max_experiments > 0 and number > max_experiments:
+            logging.info("stopping parameter autoresearch at configured max experiments=%s", max_experiments)
+            break
         config = replace(base, **params)
         metrics = simulate(config, bars)
         row = {**params, **metrics, "experiment": number}
@@ -76,6 +82,8 @@ def run_autoresearch(apply: bool = False) -> dict:
             metrics["max_drawdown_pct"],
             metrics["trade_count"],
         )
+        if yield_seconds:
+            time.sleep(yield_seconds)
 
     viable = [row for row in rows if passes_guardrails(row)]
     viable.sort(key=candidate_rank, reverse=True)

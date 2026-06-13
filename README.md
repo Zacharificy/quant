@@ -153,7 +153,7 @@ The risky-news gate is intentionally a filter, not a buy/sell signal. It blocks 
 
 Market-news Discord pings are also filtered. The bot reads the headline plus RSS summary/article body when available, then only pings when a trusted source contains a real market-moving event, market context, and a directional phrase. Examples include Trump/Iran escalation or de-escalation, tariffs, Fed/rate surprises, AI/chip policy, and Tesla/EV policy. The alert names the affected ticker group and whether the news is likely up or likely down.
 
-Railway also starts a dedicated Truth Social monitor when `BOT_ENABLE_TRUTH_MONITOR=true`. It polls Trump's public Truth Social feed every `BOT_TRUTH_MONITOR_INTERVAL_SECONDS` seconds, enriches posts through Truth Social's public status API, checks linked URLs for basic safety issues, and includes media attachment metadata such as image/video URLs, duration, dimensions, and descriptions when available. It cannot guarantee a video transcript or OCR text from every image because Truth Social does not always expose that data, so media URLs are included for manual review when no transcript or description exists.
+Railway also starts a dedicated Truth Social monitor when `BOT_ENABLE_TRUTH_MONITOR=true`. It polls Trump's public Truth Social feed every `BOT_TRUTH_MONITOR_INTERVAL_SECONDS` seconds, enriches posts through Truth Social's public status API, checks linked URLs for basic safety issues, and includes media attachment metadata such as image/video URLs, duration, dimensions, and descriptions when available. If Truth Social resets or blocks a feed request, the monitor backs off up to `BOT_TRUTH_MONITOR_MAX_BACKOFF_SECONDS` instead of hammering the feed. It cannot guarantee a video transcript or OCR text from every image because Truth Social does not always expose that data, so media URLs are included for manual review when no transcript or description exists.
 
 For options, the bot only uses long premium:
 
@@ -235,6 +235,9 @@ BOT_AUTORESEARCH_APPLY=true
 BOT_AUTORESEARCH_START_HOUR_ET=17
 BOT_RESEARCH_OVERNIGHT_END_HOUR_ET=8
 BOT_AUTORESEARCH_CHECK_MINUTES=30
+BOT_AUTORESEARCH_MAX_EXPERIMENTS=0
+BOT_AUTORESEARCH_YIELD_SECONDS=0.15
+BOT_TRUTH_MONITOR_MAX_BACKOFF_SECONDS=120
 ```
 
 It runs at most once per ET date. It can apply settings only if the candidate passes the guardrails below. For persistent Railway storage, put these on the `/data` volume:
@@ -246,7 +249,7 @@ BOT_RESEARCH_RESULTS_DIR=/data/research_results
 BOT_AUTORESEARCH_MARKER_PATH=/data/autoresearch_last_run.json
 ```
 
-The ticker research step runs mainly overnight, every 4 hours by default between 5 PM and 8 AM ET. It researches a broad universe from the saved watchlist plus the bot's strongest current scan candidates, capped by `BOT_RESEARCH_MAX_TICKERS` so Railway does not grind itself down. `BOT_RESEARCH_FOCUS_TICKERS` is treated as a priority list, not the whole universe. It writes a compact report with chart score, risky-news checks, recent article summaries, Trump/deal catalyst checks, earnings/guidance context, and a `prefer_call` / `prefer_put` / `watch` / `avoid` recommendation. Shared market-wide catalysts are summarized once, then ticker rows explain the correlation instead of repeating the same news under every symbol. The dashboard and Discord summary now show a concrete next-session swing plan with hold window, entry discipline, exit plan, setup reasons, and catalysts. The live bot uses that report lightly: `avoid` can block a trade, while agreement/disagreement only nudges the score.
+The ticker research step runs mainly overnight, every 4 hours by default between 5 PM and 8 AM ET. It researches a broad universe from the saved watchlist plus the bot's strongest current scan candidates, capped by `BOT_RESEARCH_MAX_TICKERS` so Railway does not grind itself down. `BOT_RESEARCH_FOCUS_TICKERS` is treated as a priority list, not the whole universe. It writes a compact report with chart score, risky-news checks, recent article summaries, Trump/deal catalyst checks, earnings/guidance context, and a `prefer_call` / `prefer_put` / `watch` / `avoid` recommendation. Shared market-wide catalysts are summarized once, then ticker rows explain the correlation instead of repeating the same news under every symbol. The dashboard and Discord summary now show a concrete next-session swing plan with hold window, entry discipline, exit plan, setup reasons, and catalysts. The live bot uses that report lightly: `avoid` can block a trade, while agreement/disagreement only nudges the score. Parameter auto research now waits until the next research-loop pass if ticker research just ran, and `BOT_AUTORESEARCH_YIELD_SECONDS` gives Discord and the dashboard breathing room during sweeps.
 
 Deal-catalyst scoring is intentionally narrow. It needs a real market, policy, or company context such as tariffs, trade deals, ceasefires, defense contracts, export controls, semiconductors, autos, SpaceX, Tesla, Ford, or Nvidia. Generic legal/media settlements are ignored so junk headlines do not boost index trades.
 

@@ -68,4 +68,5 @@ If Railway asks for a start command manually, use that exact command.
 - Check the dashboard after deploy and confirm the account says paper mode.
 - If using Discord, create a webhook in the trades/positions channel and set `DISCORD_TRADE_WEBHOOK_URL`.
 - Closed-market ticker research runs mainly overnight when `BOT_ENABLE_TICKER_RESEARCH=true`; by default it researches the saved watchlist plus the best scan candidates, while `BOT_RESEARCH_FOCUS_TICKERS` only acts as a priority list. Use `BOT_RESEARCH_MAX_TICKERS` to cap how wide the run can get.
+- If Discord starts logging websocket lag, raise `BOT_AUTORESEARCH_YIELD_SECONDS` or set `BOT_AUTORESEARCH_MAX_EXPERIMENTS` to a smaller number on Railway.
 - Let the bot run paper for multiple market days before considering real money.

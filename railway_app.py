@@ -137,6 +137,7 @@ def run_autoresearch_loop():
                     }
                 )
                 notifier.send(format_research_summary(ticker_payload, max_tickers=8, include_news=True))
+                parameter_due = False
 
             if parameter_due:
                 logging.info("Starting after-hours parameter autoresearch for %s. apply=%s", run_date, apply_settings)
@@ -187,17 +188,33 @@ def run_autoresearch_loop():
 
 def run_truth_monitor_loop():
     interval_seconds = max(5, int(float(os.getenv("BOT_TRUTH_MONITOR_INTERVAL_SECONDS", "10"))))
+    max_backoff_seconds = max(interval_seconds, int(float(os.getenv("BOT_TRUTH_MONITOR_MAX_BACKOFF_SECONDS", "120"))))
     fetch_limit = max(1, int(os.getenv("BOT_TRUTH_MONITOR_FETCH_LIMIT", "6")))
     config = StrategyConfig()
+    failure_count = 0
 
     while True:
+        sleep_seconds = interval_seconds
         try:
             bot = AlpacaStockBot(config)
             alerts = bot.process_truth_social_monitor_once(limit=fetch_limit)
-            logging.info("Truth monitor checked %d alert candidate(s).", len(alerts))
+            truth_status = str((bot.state.get("truth_monitor") or {}).get("status") or "")
+            if truth_status == "feed_unavailable":
+                failure_count += 1
+                sleep_seconds = min(max_backoff_seconds, interval_seconds * (2 ** min(failure_count, 5)))
+                logging.warning(
+                    "Truth monitor feed unavailable; backing off for %ss after %s failure(s).",
+                    sleep_seconds,
+                    failure_count,
+                )
+            else:
+                failure_count = 0
+                logging.info("Truth monitor checked %d alert candidate(s).", len(alerts))
         except Exception:
-            logging.exception("Truth monitor loop failed; will retry after interval.")
-        time.sleep(interval_seconds)
+            failure_count += 1
+            sleep_seconds = min(max_backoff_seconds, interval_seconds * (2 ** min(failure_count, 5)))
+            logging.exception("Truth monitor loop failed; backing off for %ss.", sleep_seconds)
+        time.sleep(sleep_seconds)
 
 
 def start_truth_monitor_loop():
