@@ -123,7 +123,11 @@ def run_autoresearch_loop():
 
             if ticker_due:
                 logging.info("Starting overnight ticker research for %s.", run_date)
-                notifier.send(f"**Ticker research started**\nFocus: `{os.getenv('BOT_RESEARCH_FOCUS_TICKERS', 'F,AMC,SPY')}`")
+                notifier.send(
+                    "**Ticker research started**\n"
+                    "Mode: `broad watchlist + best scan candidates`\n"
+                    f"Max tickers: `{os.getenv('BOT_RESEARCH_MAX_TICKERS', '28')}`"
+                )
                 ticker_payload = run_pretrade_research()
                 save_research_marker(
                     {

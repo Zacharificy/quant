@@ -67,5 +67,5 @@ If Railway asks for a start command manually, use that exact command.
 - Keep `ALPACA_DATA_FEED=iex` unless you pay for SIP data.
 - Check the dashboard after deploy and confirm the account says paper mode.
 - If using Discord, create a webhook in the trades/positions channel and set `DISCORD_TRADE_WEBHOOK_URL`.
-- Closed-market ticker research runs mainly overnight when `BOT_ENABLE_TICKER_RESEARCH=true`; by default it checks `F`, `AMC`, and `SPY` every 4 hours between 5 PM and 8 AM ET.
+- Closed-market ticker research runs mainly overnight when `BOT_ENABLE_TICKER_RESEARCH=true`; by default it researches the saved watchlist plus the best scan candidates, while `BOT_RESEARCH_FOCUS_TICKERS` only acts as a priority list. Use `BOT_RESEARCH_MAX_TICKERS` to cap how wide the run can get.
 - Let the bot run paper for multiple market days before considering real money.

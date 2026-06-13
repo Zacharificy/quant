@@ -14,6 +14,44 @@ FOCUS_TICKERS = tuple(
     for ticker in os.getenv("BOT_RESEARCH_FOCUS_TICKERS", "F,AMC,SPY,TSLA,NVDA,AMD,QQQ").split(",")
     if ticker.strip()
 )
+BROAD_RESEARCH_SEED_TICKERS = (
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMD",
+    "AVGO",
+    "TSLA",
+    "PLTR",
+    "SOFI",
+    "F",
+    "AMC",
+    "SNOW",
+    "HPE",
+    "NOK",
+    "SPCE",
+    "APLD",
+    "MU",
+    "MRVL",
+    "SMCI",
+    "MARA",
+    "IREN",
+)
+
+
+def env_int(name: str, default: int, min_value: int = 1, max_value: int = 100) -> int:
+    try:
+        value = int(float(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(max_value, value))
+
+
+RESEARCH_MAX_TICKERS = env_int("BOT_RESEARCH_MAX_TICKERS", 28, min_value=5, max_value=60)
+RESEARCH_SCAN_CANDIDATES = env_int("BOT_RESEARCH_SCAN_CANDIDATES", 16, min_value=3, max_value=40)
 
 
 def research_path() -> Path:
@@ -23,7 +61,7 @@ def research_path() -> Path:
 def ensure_focus_tickers() -> list[str]:
     tickers = read_watchlist()
     changed = False
-    for ticker in FOCUS_TICKERS:
+    for ticker in list(FOCUS_TICKERS) + list(BROAD_RESEARCH_SEED_TICKERS):
         if ticker not in tickers:
             tickers.append(ticker)
             changed = True
@@ -34,7 +72,7 @@ def ensure_focus_tickers() -> list[str]:
 
 def run_pretrade_research() -> dict:
     tickers = ensure_focus_tickers()
-    add_research_focus_to_extra_tickers()
+    add_research_focus_to_extra_tickers(tickers)
     config = replace(StrategyConfig(), tickers=tuple(tickers))
     bot = AlpacaStockBot(config)
     today = datetime.now(NY_TZ).date()
@@ -54,20 +92,28 @@ def run_pretrade_research() -> dict:
         key=lambda item: float(item[1].get("score", 0.0)),
         reverse=True,
     )
-    candidate_tickers = [ticker for ticker, _data in candidates[:5]]
+    candidate_tickers = [ticker for ticker, _data in candidates[:RESEARCH_SCAN_CANDIDATES]]
     research_tickers = []
-    for ticker in list(FOCUS_TICKERS) + candidate_tickers:
-        if ticker not in research_tickers:
+    research_priority = (
+        candidate_tickers
+        + list(FOCUS_TICKERS)
+        + list(BROAD_RESEARCH_SEED_TICKERS)
+        + list(tickers)
+    )
+    for ticker in research_priority:
+        if ticker not in research_tickers and len(research_tickers) < RESEARCH_MAX_TICKERS:
             research_tickers.append(ticker)
 
     reports = {}
     for ticker in research_tickers:
         reports[ticker] = research_ticker(bot, ticker, bars, news)
 
+    market_catalysts = build_market_catalysts(reports)
     swing_plan = build_swing_plan(reports)
 
     payload = {
         "created_at": datetime.now(NY_TZ).isoformat(timespec="seconds"),
+        "research_mode": "broad_watchlist_plus_scan",
         "focus_tickers": list(FOCUS_TICKERS),
         "candidate": {
             "ticker": candidate[0],
@@ -78,6 +124,7 @@ def run_pretrade_research() -> dict:
         else None,
         "researched_tickers": research_tickers,
         "reports": reports,
+        "market_catalysts": market_catalysts,
         "swing_plan": swing_plan,
     }
 
@@ -90,14 +137,15 @@ def run_pretrade_research() -> dict:
     return payload
 
 
-def add_research_focus_to_extra_tickers() -> None:
+def add_research_focus_to_extra_tickers(watchlist_tickers: list[str] | None = None) -> None:
     existing = [
         ticker.strip().upper()
         for ticker in os.getenv("BOT_EXTRA_TICKERS", "").split(",")
         if ticker.strip()
     ]
     merged = []
-    for ticker in existing + list(FOCUS_TICKERS):
+    watchlist_tickers = [str(ticker).strip().upper() for ticker in (watchlist_tickers or []) if str(ticker).strip()]
+    for ticker in existing + list(FOCUS_TICKERS) + list(BROAD_RESEARCH_SEED_TICKERS) + watchlist_tickers:
         if ticker not in merged:
             merged.append(ticker)
     os.environ["BOT_EXTRA_TICKERS"] = ",".join(merged)
@@ -203,10 +251,16 @@ def score_news_catalysts(bot: AlpacaStockBot, ticker: str, direction: str | None
                 confidence = float(analysis.get("confidence", 0.0) or 0.0)
                 if aligns:
                     boost += min(0.10, confidence * 0.08)
-                    reasons.append(f"trusted news aligns {analysis.get('direction')}: {snippet(text)}")
+                    reasons.append(
+                        f"trusted market catalyst aligns {analysis.get('direction')}: "
+                        f"{analysis.get('event', 'market_news')} ({confidence:.0%} confidence)"
+                    )
                 else:
                     boost -= min(0.08, confidence * 0.06)
-                    reasons.append(f"trusted news conflicts {analysis.get('direction')}: {snippet(text)}")
+                    reasons.append(
+                        f"trusted market catalyst conflicts {analysis.get('direction')}: "
+                        f"{analysis.get('event', 'market_news')} ({confidence:.0%} confidence)"
+                    )
                 items.append(
                     {
                         "type": analysis.get("event", "market_news"),
@@ -214,6 +268,8 @@ def score_news_catalysts(bot: AlpacaStockBot, ticker: str, direction: str | None
                         "confidence": analysis.get("confidence", 0.0),
                         "headline": item.get("headline", "")[:180],
                         "summary": item.get("summary", "")[:260],
+                        "key": catalyst_key(text),
+                        "correlation": catalyst_correlation(ticker, analysis),
                     }
                 )
         if deal:
@@ -222,7 +278,7 @@ def score_news_catalysts(bot: AlpacaStockBot, ticker: str, direction: str | None
                 boost += deal["boost"]
             elif direction == "put" and deal["direction"] == "up":
                 boost -= min(0.05, deal["boost"])
-            reasons.append(f"deal catalyst {deal['direction']}: {snippet(text)}")
+            reasons.append(f"deal or policy catalyst {deal['direction']}: {ticker} has related exposure")
             items.append(
                 {
                     "type": "deal",
@@ -230,9 +286,62 @@ def score_news_catalysts(bot: AlpacaStockBot, ticker: str, direction: str | None
                     "confidence": deal["confidence"],
                     "headline": item.get("headline", "")[:180],
                     "summary": item.get("summary", "")[:260],
+                    "key": catalyst_key(text),
+                    "correlation": f"{ticker} has policy/deal sensitivity in this setup.",
                 }
             )
     return {"score_boost": max(-0.12, min(0.18, boost)), "reasons": dedupe(reasons), "items": items[:5]}
+
+
+def catalyst_correlation(ticker: str, analysis: dict) -> str:
+    event = str(analysis.get("event") or "market news").replace("_", " ")
+    direction = str(analysis.get("direction") or "watch")
+    affected = set(analysis.get("tickers") or [])
+    if ticker in affected:
+        return f"{ticker} is directly listed in the {event} impact map."
+    if ticker in {"SPY", "QQQ", "DIA", "IWM"}:
+        return f"{ticker} is a broad-market ETF, so the {direction} macro catalyst can move index risk appetite."
+    return f"{ticker} is being treated as correlated through broad-market risk appetite, not as a direct headline target."
+
+
+def catalyst_key(text: str) -> str:
+    clean = re.sub(r"[^a-z0-9 ]+", " ", str(text or "").lower())
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean[:220]
+
+
+def build_market_catalysts(reports: dict) -> list[dict]:
+    grouped = {}
+    for ticker, report in reports.items():
+        if not isinstance(report, dict):
+            continue
+        for item in report.get("catalysts") or []:
+            key = str(item.get("key") or catalyst_key(f"{item.get('headline', '')} {item.get('summary', '')}"))
+            if not key:
+                continue
+            group = grouped.setdefault(
+                key,
+                {
+                    "key": key,
+                    "type": item.get("type", "market_news"),
+                    "direction": item.get("direction", "watch"),
+                    "confidence": float(item.get("confidence", 0.0) or 0.0),
+                    "headline": str(item.get("headline") or "")[:220],
+                    "summary": str(item.get("summary") or "")[:320],
+                    "tickers": [],
+                    "correlations": [],
+                },
+            )
+            if ticker not in group["tickers"]:
+                group["tickers"].append(ticker)
+            correlation = str(item.get("correlation") or "").strip()
+            if correlation and correlation not in group["correlations"]:
+                group["correlations"].append(correlation)
+            group["confidence"] = max(group["confidence"], float(item.get("confidence", 0.0) or 0.0))
+
+    shared = [group for group in grouped.values() if len(group["tickers"]) >= 2]
+    shared.sort(key=lambda group: (len(group["tickers"]), group["confidence"]), reverse=True)
+    return shared[:3]
 
 
 def detect_deal_catalyst(text: str) -> dict | None:
@@ -413,10 +522,21 @@ def dedupe(items: list[str]) -> list[str]:
 def format_research_summary(payload: dict, max_tickers: int = 8, include_news: bool = True) -> str:
     reports = payload.get("reports") or {}
     candidate = payload.get("candidate") or {}
+    researched = payload.get("researched_tickers") or []
+    market_catalysts = payload.get("market_catalysts") or []
+    shared_catalyst_keys = {str(item.get("key") or "") for item in market_catalysts if item.get("key")}
+    shared_catalyst_keys.update(
+        catalyst_key(f"{item.get('headline', '')} {item.get('summary', '')}")
+        for item in market_catalysts
+        if item.get("headline") or item.get("summary")
+    )
+    shared_catalyst_keys.discard("")
     lines = ["**Ticker research summary**"]
     created_at = payload.get("created_at")
     if created_at:
         lines.append(f"Updated: `{created_at}`")
+    if researched:
+        lines.append(f"Research universe: `{len(researched)}` tickers from watchlist + best scan candidates")
     if candidate:
         lines.append(
             "Best next-session idea: "
@@ -425,6 +545,22 @@ def format_research_summary(payload: dict, max_tickers: int = 8, include_news: b
         )
     else:
         lines.append("Best next-session idea: `none`")
+
+    if market_catalysts:
+        lines.append("")
+        lines.append("**Market catalyst**")
+        for catalyst in market_catalysts[:2]:
+            direction = str(catalyst.get("direction") or "watch")
+            event = str(catalyst.get("type") or "market_news").replace("_", " ")
+            headline = str(catalyst.get("headline") or catalyst.get("summary") or "").strip()
+            tickers = ", ".join((catalyst.get("tickers") or [])[:8])
+            confidence = float(catalyst.get("confidence", 0.0) or 0.0)
+            lines.append(f"- {direction.upper()} {event} ({confidence:.0%}) for `{tickers}`")
+            if headline:
+                lines.append(f"  {headline[:240]}")
+            correlations = catalyst.get("correlations") or []
+            if correlations:
+                lines.append(f"  Correlation: {str(correlations[0])[:220]}")
 
     swing = payload.get("swing_plan") or {}
     if swing.get("ticker"):
@@ -442,6 +578,9 @@ def format_research_summary(payload: dict, max_tickers: int = 8, include_news: b
         for reason in (swing.get("reasons") or [])[:3]:
             lines.append(f"- why: {str(reason)[:170]}")
         for catalyst in (swing.get("catalysts") or [])[:2]:
+            if str(catalyst.get("key") or "") in shared_catalyst_keys:
+                lines.append("- catalyst: uses the market catalyst above; not repeating the full news text")
+                continue
             direction = str(catalyst.get("direction", "watch"))
             headline = str(catalyst.get("headline") or catalyst.get("summary") or "").strip()
             if headline:
@@ -461,9 +600,14 @@ def format_research_summary(payload: dict, max_tickers: int = 8, include_news: b
             lines.append(f"- {str(reason)[:160]}")
         if include_news:
             news = report.get("news") or []
-            if news:
-                headline = str(news[0].get("headline") or "").strip()
-                summary = str(news[0].get("summary") or "").strip()
+            non_shared_news = [
+                item
+                for item in news
+                if catalyst_key(f"{item.get('headline', '')} {item.get('summary', '')}") not in shared_catalyst_keys
+            ]
+            if non_shared_news:
+                headline = str(non_shared_news[0].get("headline") or "").strip()
+                summary = str(non_shared_news[0].get("summary") or "").strip()
                 snippet = headline or summary
                 if snippet:
                     lines.append(f"- news: {snippet[:180]}")
